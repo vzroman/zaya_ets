@@ -248,11 +248,11 @@ iterate_stop(_Key, _Ref, _StopKey )->
   [].
 
 %----------------------FOLD LEFT------------------------------------------
-foldl( #ref{ref = Ref, read = Params}, Query, UserFun, InAcc )->
-  StartKey =
+foldl( Ref, Query, UserFun, InAcc )->
+  First =
     case Query of
-      #{start := Start}-> ?ENCODE_KEY(Start);
-      _->first
+      #{start := Start}-> Start;
+      _->ets:first( Ref )
     end,
   Fun =
     case Query of
@@ -270,38 +270,47 @@ foldl( #ref{ref = Ref, read = Params}, Query, UserFun, InAcc )->
         UserFun
     end,
 
-  {ok, Itr} = eleveldb:iterator(Ref, [{first_key, StartKey}|Params]),
   try
     case Query of
       #{ stop:=Stop }->
-        do_foldl_stop( eleveldb:iterator_move(Itr, StartKey), Itr, Fun, InAcc, ?ENCODE_KEY(Stop) );
+        do_foldl_stop( First, Ref, Fun, InAcc, Stop);
       _->
-        do_foldl( eleveldb:iterator_move(Itr, StartKey), Itr, Fun, InAcc )
+        do_foldl( First, Ref, Fun, InAcc )
     end
   catch
     {stop,Acc}->Acc
-  after
-    catch eleveldb:iterator_close(Itr)
   end.
 
-do_foldl_stop( {ok,K,V}, Itr, Fun, InAcc, StopKey ) when K =< StopKey->
-  Acc = Fun( {?DECODE_KEY(K), ?DECODE_VALUE(V)}, InAcc ),
-  do_foldl_stop( eleveldb:iterator_move(Itr,prefetch), Itr, Fun, Acc, StopKey  );
-do_foldl_stop(_, _Itr, _Fun, Acc, _StopKey )->
+do_foldl_stop('$end_of_table', _Ref, _Fun, Acc, _StopKey)->
+  Acc;
+do_foldl_stop( Key, Ref, Fun, InAcc, StopKey ) when Key =< StopKey->
+  case ets:lookup(Ref, Key) of
+    [Rec]->
+      Acc = Fun( Rec, InAcc ),
+      do_foldl_stop( ets:next(Ref, Key), Ref, Fun, Acc, StopKey  );
+    []->
+      do_foldl_stop( ets:next(Ref, Key), Ref, Fun, InAcc, StopKey  )
+  end;
+do_foldl_stop(_Key, _Ref, _Fun, Acc, _StopKey)->
   Acc.
 
-do_foldl( {ok,K,V}, Itr, Fun, InAcc )->
-  Acc = Fun( {?DECODE_KEY(K), ?DECODE_VALUE(V)}, InAcc ),
-  do_foldl( eleveldb:iterator_move(Itr,prefetch), Itr, Fun, Acc  );
-do_foldl(_, _Itr, _Fun, Acc )->
-  Acc.
+do_foldl( '$end_of_table', _Ref, _Fun, Acc )->
+  Acc;
+do_foldl( Key, Ref, Fun, InAcc )->
+  case ets:lookup(Ref, Key) of
+    [Rec]->
+      Acc = Fun( Rec, InAcc ),
+      do_foldl( ets:next(Ref, Key), Ref, Fun, Acc  );
+    []->
+      do_foldl( ets:next(Ref, Key), Ref, Fun, InAcc  )
+  end.
 
 %----------------------FOLD RIGHT------------------------------------------
-foldr( #ref{ref = Ref, read = Params}, Query, UserFun, InAcc )->
-  StartKey =
+foldr( Ref, Query, UserFun, InAcc )->
+  Last =
     case Query of
-      #{start := Start}-> ?ENCODE_KEY(Start);
-      _->last
+      #{start := Start}-> Start;
+      _->ets:last( Ref )
     end,
   Fun =
     case Query of
@@ -319,53 +328,46 @@ foldr( #ref{ref = Ref, read = Params}, Query, UserFun, InAcc )->
         UserFun
     end,
 
-  {ok, Itr} = eleveldb:iterator(Ref, [{first_key, StartKey}|Params]),
   try
     case Query of
       #{ stop:=Stop }->
-        do_foldr_stop( eleveldb:iterator_move(Itr, StartKey), Itr, Fun, InAcc, ?ENCODE_KEY(Stop) );
+        do_foldr_stop( Last, Ref, Fun, InAcc, Stop);
       _->
-        do_foldr( eleveldb:iterator_move(Itr, StartKey), Itr, Fun, InAcc )
+        do_foldr( Last, Ref, Fun, InAcc )
     end
   catch
     {stop,Acc}-> Acc
-  after
-    catch eleveldb:iterator_close(Itr)
   end.
 
-do_foldr_stop( {ok,K,V}, Itr, Fun, InAcc, StopKey ) when K >= StopKey->
-  Acc = Fun( {?DECODE_KEY(K), ?DECODE_VALUE(V)}, InAcc ),
-  do_foldr_stop( eleveldb:iterator_move(Itr,prev), Itr, Fun, Acc, StopKey  );
-do_foldr_stop(_, _Itr, _Fun, Acc, _StopKey )->
+do_foldr_stop('$end_of_table', _Ref, _Fun, Acc, _StopKey )->
+  Acc;
+do_foldr_stop( Key, Ref, Fun, InAcc, StopKey ) when Key >= StopKey->
+  case ets:lookup(Ref, Key) of
+    [Rec]->
+      Acc = Fun( Rec, InAcc ),
+      do_foldr_stop( ets:prev(Ref, Key), Ref, Fun, Acc, StopKey  );
+    []->
+      do_foldr_stop( ets:prev(Ref, Key), Ref, Fun, InAcc, StopKey  )
+  end;
+do_foldr_stop(_Key, _Ref, _Fun, Acc, _StopKey)->
   Acc.
 
-do_foldr( {ok,K,V}, Itr, Fun, InAcc )->
-  Acc = Fun( {?DECODE_KEY(K), ?DECODE_VALUE(V)}, InAcc ),
-  do_foldl( eleveldb:iterator_move(Itr,prev), Itr, Fun, Acc  );
-do_foldr(_, _Itr, _Fun, Acc )->
-  Acc.
+do_foldr('$end_of_table', _Ref, _Fun, Acc )->
+  Acc;
+do_foldr( Key, Ref, Fun, InAcc )->
+  case ets:lookup(Ref, Key) of
+    [Rec]->
+      Acc = Fun( Rec, InAcc ),
+      do_foldr( ets:prev(Ref, Key), Ref, Fun, Acc  );
+    []->
+      do_foldr( ets:prev(Ref, Key), Ref, Fun, InAcc  )
+  end.
 
 %%=================================================================
 %%	INFO
 %%=================================================================
 get_size( Ref )->
-  get_size( Ref, 10 ).
-get_size( #ref{dir = Dir} = R, Attempts ) when Attempts > 0->
-  S = list_to_binary(os:cmd("du -s --block-size=1 "++ Dir)),
-  case binary:split(S,<<"\t">>) of
-    [Size|_]->
-      try binary_to_integer( Size )
-      catch _:_->
-        % Sometimes du returns error when there are some file transformations
-        timer:sleep(200),
-        get_size( R, Attempts - 1 )
-      end;
-    _ ->
-      timer:sleep(200),
-      get_size( R, Attempts - 1 )
-  end;
-get_size( _R, 0 )->
-  -1.
+  erlang:system_info(wordsize) * ets:info( Ref, memory ).
 
 %%=================================================================
 %%	COPY
