@@ -1,18 +1,6 @@
 
 -module(zaya_ets).
 
--define(DEFAULT_OPTIONS,#{
-    dir => ".",
-    open_attempts => ?DEFAULT_OPEN_ATTEMPTS ,
-    eleveldb => ?DEFAULT_ELEVELDB_OPTIONS
-}).
--define(env, maps_merge(?DEFAULT_OPTIONS, maps:from_list(application:get_all_env(zaya_leveldb))) ).
-
-
--define(OPTIONS(O),
-  maps_merge(?env, O)
-).
-
 -ifndef(TEST).
 
 -define(LOGERROR(Text),lager:error(Text)).
@@ -89,344 +77,174 @@
 
 ]).
 
--record(ref,{ref,read,write,dir}).
-
 %%=================================================================
 %%	SERVICE
 %%=================================================================
-create( Params )->
-  Options = #{
-    dir := Dir
-  } = ?OPTIONS( maps_merge(Params, #{eleveldb => #{open_options => #{ create_if_missing => true }}}) ),
-
-  ensure_dir( Dir ),
-
-  Ref = try_open(Dir, Options),
-  close( Ref ),
-
+create( _Params )->
   ok.
 
-open( Params )->
-  Options = #{
-    dir := Dir
-  } = ?OPTIONS( Params ),
+open( _Params )->
+  ets:new(?MODULE,[public,ordered_set]).
 
-  case filelib:is_dir( Dir ) of
-    true->
-      ok;
-    false->
-      ?LOGERROR("~s doesn't exist",[ Dir ]),
-      throw(not_exists)
-  end,
+close( Ref )->
+  catch ets:delete( Ref ),
+  ok.
 
-  try_open(Dir, Options).
-
-try_open(Dir, #{
-  eleveldb := #{
-    open_options := Params,
-    read := Read,
-    write := Write
-  },
-  open_attempts := Attempts
-} = Options) when Attempts > 0->
-
-  ?LOGINFO("~s try open with params ~p",[Dir, Params]),
-  case eleveldb:open(Dir, maps:to_list(Params)) of
-    {ok, Ref} ->
-      #ref{
-        ref = Ref,
-        read = maps:to_list(Read),
-        write = maps:to_list(Write),
-        dir = Dir
-      };
-    %% Check for open errors
-    {error, {db_open, Error}} ->
-      % Check for hanging lock
-      case lists:prefix("IO error: lock ", Error) of
-        true ->
-          ?LOGWARNING("~s unable to open, hanging lock, trying to unlock",[Dir]),
-          case file:delete(?LOCK(Dir)) of
-            ok->
-              ?LOGINFO("~s lock removed, trying open",[ Dir ]),
-              % Dont decrement the attempt because we fixed the error ourselves
-              try_open(Dir,Options);
-            {error,UnlockError}->
-              ?LOGERROR("~s lock remove error ~p, try to remove it manually",[?LOCK(Dir),UnlockError]),
-              throw(locked)
-          end;
-        false ->
-          ?LOGWARNING("~s open error ~p, try to repair left attempts ~p",[Dir,Error,Attempts-1]),
-          try eleveldb:repair(Dir, [])
-          catch
-            _:E:S->
-              ?LOGWARNING("~s repair attempt failed error ~p stack ~p, left attemps ~p",[Dir,E,S,Attempts-1])
-          end,
-          try_open(Dir,Options#{ open_attempts => Attempts -1 })
-      end;
-    {error, Other} ->
-      ?LOGERROR("~s open error ~p, left attemps ~p",[Dir,Other,Attempts-1]),
-      try_open( Dir, Options#{ open_attempts => Attempts -1 } )
-  end;
-try_open(Dir, #{eleveldb := Params})->
-  ?LOGERROR("~s OPEN ERROR: params ~p",[Dir, Params]),
-  throw(open_error).
-
-close( #ref{ref = Ref} )->
-  case eleveldb:close( Ref ) of
-    ok -> ok;
-    {error,Error}-> throw( Error)
-  end.
-
-remove( Params )->
-  Options = #{
-    dir := Dir
-  } = ?OPTIONS( Params ),
-
-  Attempts = ?DESTROY_ATTEMPTS,
-  try_remove( Dir, Attempts,  Options ).
-
-try_remove( Dir, Attempts, #{
-  eleveldb := Params
-} = Options) when Attempts >0 ->
-  case eleveldb:destroy( Dir, Params ) of
-    ok->
-      file:del_dir(Dir),
-      ?LOGINFO("~s removed",[Dir]);
-    {error, {error_db_destroy, Error}} ->
-      case lists:prefix("IO error: lock ", Error) of
-        true ->
-          ?LOGWARNING("~s unable to remove, hanging lock, trying to unlock",[ Dir ]),
-          case file:delete(?LOCK(Dir)) of
-            ok->
-              ?LOGINFO("~s lock removed, trying to remove",[Dir]),
-              % Dont decrement the attempt because we fixed the error ourselves
-              try_remove(Dir,Attempts,Options);
-            {error,UnlockError}->
-              ?LOGERROR("~s lock remove error ~p, try to remove it manually",[?LOCK(Dir),UnlockError]),
-              throw(locked)
-          end;
-        false ->
-          ?LOGWARNING("~s remove error ~p, try to repair left attempts ~p",[Dir,Error,Attempts-1]),
-          try eleveldb:repair(Dir, [])
-          catch
-            _:E:S->
-              ?LOGWARNING("~s repair attempt failed error ~p stack ~p, left attemps ~p",[Dir,E,S,Attempts-1])
-          end,
-          try_remove(Dir, Attempts -1, Options)
-      end;
-    {error, Error} ->
-      ?LOGWARNING("~s remove error ~p, try to repair left attempts ~p",[Dir,Error,Attempts-1]),
-      try eleveldb:repair(Dir, [])
-      catch
-        _:E:S->
-          ?LOGWARNING("~s repair attempt failed error ~p stack ~p, left attemps ~p",[Dir,E,S,Attempts-1])
-      end,
-      try_remove(Dir, Attempts -1, Options)
-  end;
-try_remove(Dir, 0, #{eleveldb := Params})->
-  ?LOGERROR("~s REMOVE ERROR: params ~p",[Dir, Params]),
-  throw(remove_error).
+remove( _Params )->
+  ok.
 
 %%=================================================================
 %%	LOW_LEVEL
 %%=================================================================
-read(#ref{ref = Ref, read = Params}=R, [Key|Rest])->
-  case eleveldb:get(Ref, ?ENCODE_KEY(Key), Params) of
-    {ok, Value} ->
-      [{Key,?DECODE_VALUE(Value)} | read(R,Rest) ];
+read(Ref, [Key|Rest])->
+  case ets:lookup(Ref,Key) of
+    [Rec]->
+      [Rec | read(Ref, Rest)];
     _->
-      read(R, Rest)
+      read(Ref, Rest)
   end;
-read(_R,[])->
+read(_Ref,[])->
   [].
 
-write(#ref{ref = Ref, write = Params}, KVs)->
-  case eleveldb:write(Ref,[{put,?ENCODE_KEY(K),?ENCODE_VALUE(V)} || {K,V} <- KVs ], Params) of
-    ok->ok;
-    {error,Error}->throw(Error)
-  end.
+write(Ref, KVs)->
+  ets:insert( Ref, KVs ),
+  ok.
 
-delete(#ref{ref = Ref, write = Params},Keys)->
-  case eleveldb:write(Ref,[{delete,?ENCODE_KEY(K)} || K <- Keys], Params) of
-    ok -> ok;
-    {error, Error}-> throw(Error)
-  end.
+delete(Ref,Keys)->
+  [ ets:delete(Ref, K) || K <- Keys],
+  ok.
+
 
 %%=================================================================
 %%	ITERATOR
 %%=================================================================
-first( #ref{ref = Ref, read = Params} )->
-  {ok, Itr} = eleveldb:iterator(Ref, Params),
-  try
-    case eleveldb:iterator_move(Itr, first) of
-      {ok, K, V}->
-        { ?DECODE_KEY(K), ?DECODE_VALUE(V) };
-      {error, Error}->
-        throw(Error)
-    end
-  after
-    catch eleveldb:iterator_close(Itr)
+first( Ref )->
+  case ets:first( Ref ) of
+    '$end_of_table'-> throw( undefined );
+    Key->
+      case ets:lookup(Ref, Key ) of
+        [Rec]->
+          Rec;
+        _->
+          next( Ref, Key )
+      end
   end.
 
-last( #ref{ref = Ref, read = Params} )->
-  {ok, Itr} = eleveldb:iterator(Ref, Params),
-  try
-    case eleveldb:iterator_move(Itr, last) of
-      {ok, K, V}->
-        { ?DECODE_KEY(K), ?DECODE_VALUE(V) };
-      {error, Error}->
-        throw(Error)
-    end
-  after
-    catch eleveldb:iterator_close(Itr)
+last( Ref )->
+  case ets:last( Ref ) of
+    '$end_of_table'-> throw( undefined );
+    Key->
+      case ets:lookup(Ref, Key ) of
+        [Rec]->
+          Rec;
+        _->
+          prev( Ref, Key )
+      end
   end.
 
-next( #ref{ref = Ref, read = Params}, K0 )->
-  Key = ?ENCODE_KEY(K0),
-  {ok, Itr} = eleveldb:iterator(Ref, Params),
-  try
-    case eleveldb:iterator_move(Itr, Key) of
-      {ok, Key, _}->
-        case eleveldb:iterator_move( Itr, next ) of
-          {ok,K,V}->
-            { ?DECODE_KEY(K), ?DECODE_VALUE(V) };
-          {error,Error}->
-            throw( Error )
-        end;
-      {ok,K,V}->
-        { ?DECODE_KEY(K), ?DECODE_VALUE(V) };
-      {error, Error}->
-        throw(Error)
-    end
-  after
-    catch eleveldb:iterator_close(Itr)
+next( Ref, Key )->
+  case ets:next( Ref, Key ) of
+    '$end_of_table' -> throw( undefined );
+    Next->
+      case ets:lookup( Ref, Next ) of
+        [Rec]-> Rec;
+        _-> next( Ref, Next )
+      end
   end.
 
-prev( #ref{ref = Ref, read = Params}, K0 )->
-  Key = ?ENCODE_KEY(K0),
-  {ok, Itr} = eleveldb:iterator(Ref, Params),
-  try
-    case eleveldb:iterator_move(Itr, Key) of
-      {ok,_,_}->
-        case eleveldb:iterator_move( Itr, prev ) of
-          {ok,K,V}->
-            { ?DECODE_KEY(K), ?DECODE_VALUE(V) };
-          {error,Error}->
-            throw( Error )
-        end;
-      {error, _}->
-        case eleveldb:iterator_move(Itr, last) of
-          {ok,K,V}->
-            { ?DECODE_KEY(K), ?DECODE_VALUE(V) };
-          {error,Error}->
-            throw( Error )
-        end
-    end
-  after
-    catch eleveldb:iterator_close(Itr)
+prev( Ref, Key )->
+  case ets:prev( Ref, Key ) of
+    '$end_of_table' -> throw( undefined );
+    Prev->
+      case ets:lookup( Ref, Prev ) of
+        [Rec]-> Rec;
+        _-> prev( Ref, Prev )
+      end
   end.
 
 %%=================================================================
 %%	HIGH-LEVEL API
 %%=================================================================
 %----------------------FIND------------------------------------------
-find(#ref{ref = Ref, read = Params}, Query)->
-  StartKey =
-    case Query of
-      #{start := Start}-> ?ENCODE_KEY(Start);
-      _->first
-    end,
-
-  {ok, Itr} = eleveldb:iterator(Ref, [{first_key, StartKey}|Params]),
-  try
-    case Query of
-      #{ stop:=Stop, ms:= MS, limit:=Limit } when is_integer(Limit)->
-        StopKey = ?ENCODE_KEY(Stop),
-        CompiledMS = ets:match_spec_compile(MS),
-        iterate_query(eleveldb:iterator_move(Itr, StartKey), Itr, prefetch, StopKey, CompiledMS, Limit );
-      #{ stop:=Stop, ms:= MS}->
-        StopKey = ?ENCODE_KEY(Stop),
-        CompiledMS = ets:match_spec_compile(MS),
-        iterate_ms_stop(eleveldb:iterator_move(Itr, StartKey), Itr, prefetch, StopKey, CompiledMS );
-      #{ stop:= Stop, limit := Limit } when is_integer(Limit)->
-        iterate_stop_limit(eleveldb:iterator_move(Itr, StartKey), Itr, prefetch, ?ENCODE_KEY(Stop), Limit );
-      #{ stop:= Stop }->
-        iterate_stop(eleveldb:iterator_move(Itr, StartKey), Itr, prefetch, ?ENCODE_KEY(Stop) );
-      #{ms:= MS, limit := Limit} when is_integer(Limit)->
-        iterate_ms_limit(eleveldb:iterator_move(Itr, StartKey), Itr, prefetch, ets:match_spec_compile(MS), Limit );
-      #{ms:= MS}->
-        iterate_ms(eleveldb:iterator_move(Itr, StartKey), Itr, prefetch, ets:match_spec_compile(MS) );
-      #{limit := Limit} when is_integer(Limit)->
-        iterate_limit(eleveldb:iterator_move(Itr, StartKey), Itr, prefetch, Limit );
-      _->
-        iterate(eleveldb:iterator_move(Itr, StartKey), Itr, prefetch )
-    end
-  after
-    catch eleveldb:iterator_close(Itr)
+find(Ref, Query)->
+  case {Query, maps:size( Query )} of
+    { #{ ms := MS }, 1} ->
+      ets:select(Ref, MS);
+    { #{ms := MS, limit := Limit}, 2}->
+      case ets:select(Ref, MS, Limit) of
+        {Result, _Continuation}->
+          Result;
+        '$end_of_table' ->
+          throw( undefined )
+      end;
+    _->
+      First =
+        case Query of
+          #{ start := Start} -> Start;
+          _-> ets:first( Ref )
+        end,
+        case Query of
+          #{  stop := Stop, ms := MS, limit := Limit }->
+            CompiledMS = ets:match_spec_compile(MS),
+            iterate_query(First, Ref, Stop, CompiledMS, Limit  );
+          #{  stop := Stop, ms := MS }->
+            CompiledMS = ets:match_spec_compile(MS),
+            iterate_ms_stop(First, Ref, Stop, CompiledMS );
+          #{ stop:= Stop, limit := Limit }->
+            iterate_stop_limit(First, Ref, Stop, Limit );
+          #{ stop:= Stop }->
+            iterate_stop(First, Ref, Stop );
+          _->
+            ets:tab2list( Ref )
+        end
   end.
 
-iterate_query({ok,K,V}, Itr, Next, StopKey, MS, Limit ) when K =< StopKey, Limit > 0->
-  Rec = {?DECODE_KEY(K),?DECODE_VALUE(V) },
-  case ets:match_spec_run([Rec], MS) of
+iterate_query('$end_of_table', _Ref, _StopKey, _MS, _Limit  )->
+  [];
+iterate_query(Key, Ref, StopKey, MS, Limit  ) when Key =< StopKey, Limit > 0->
+  case ets:match_spec_run(ets:lookup(Ref, Key ), MS) of
     [Res]->
-      [Res| iterate_query( eleveldb:iterator_move(Itr,Next), Itr, Next, StopKey, MS, Limit - 1 )];
+      [Res | iterate_query(ets:next(Ref,Key), Ref, StopKey, MS, Limit -1 )];
     []->
-      iterate_query( eleveldb:iterator_move(Itr,Next), Itr, Next, StopKey, MS, Limit )
+      iterate_query(ets:next(Ref,Key), Ref, StopKey, MS, Limit  )
   end;
-iterate_query(_, _Itr, _Next, _StopKey, _MS, _Limit )->
+iterate_query(_Key, _Ref, _StopKey, _MS, _Limit  )->
   [].
 
-iterate_ms_stop({ok,K,V}, Itr, Next, StopKey, MS ) when K =< StopKey->
-  Rec = {?DECODE_KEY(K),?DECODE_VALUE(V) },
-  case ets:match_spec_run([Rec], MS) of
+iterate_ms_stop('$end_of_table', _Ref, _StopKey, _MS )->
+  [];
+iterate_ms_stop(Key, Ref, StopKey, MS ) when Key =< StopKey->
+  case ets:match_spec_run(ets:lookup(Ref, Key ), MS) of
     [Res]->
-      [Res| iterate_ms_stop( eleveldb:iterator_move(Itr,Next), Itr, Next, StopKey, MS )];
+      [Res | iterate_ms_stop(ets:next(Ref,Key), Ref, StopKey, MS )];
     []->
-      iterate_ms_stop( eleveldb:iterator_move(Itr,Next), Itr, Next, StopKey, MS )
+      iterate_ms_stop(ets:next(Ref,Key), Ref, StopKey, MS )
   end;
-iterate_ms_stop(_, _Itr, _Next, _StopKey, _MS )->
+iterate_ms_stop(_Key, _Ref, _StopKey, _MS )->
   [].
 
-iterate_stop_limit({ok,K,V}, Itr, Next, StopKey, Limit ) when K =< StopKey, Limit > 0->
-  [{?DECODE_KEY(K),?DECODE_VALUE(V) }| iterate_stop_limit( eleveldb:iterator_move(Itr,Next), Itr, Next, StopKey, Limit -1 )];
-iterate_stop_limit(_, _Itr, _Next, _StopKey, _Limit )->
-  [].
-
-iterate_stop({ok,K,V}, Itr, Next, StopKey ) when K =< StopKey->
-  [{?DECODE_KEY(K),?DECODE_VALUE(V) }| iterate_stop( eleveldb:iterator_move(Itr,Next), Itr, Next, StopKey )];
-iterate_stop(_, _Itr, _Next, _StopKey )->
-  [].
-
-iterate_ms_limit({ok,K,V}, Itr, Next, MS, Limit ) when Limit >0->
-  Rec = {?DECODE_KEY(K),?DECODE_VALUE(V) },
-  case ets:match_spec_run([Rec], MS) of
+iterate_stop_limit('$end_of_table', _Ref, _StopKey, _Limit )->
+  [];
+iterate_stop_limit(Key, Ref, StopKey, Limit ) when Key =< StopKey, Limit > 0->
+  case ets:lookup(Ref, Key ) of
     [Res]->
-      [Res| iterate_ms_limit( eleveldb:iterator_move(Itr,Next), Itr, Next, MS, Limit - 1 )];
+      [Res | iterate_stop_limit(ets:next(Ref,Key), Ref, StopKey, Limit-1 )];
     []->
-      iterate_ms_limit( eleveldb:iterator_move(Itr,Next), Itr, Next, MS, Limit )
+      iterate_stop_limit(ets:next(Ref,Key), Ref, StopKey, Limit )
   end;
-iterate_ms_limit(_, _Itr, _Next, _MS, _Limit )->
+iterate_stop_limit(_Key, _Ref, _StopKey, _Limit )->
   [].
 
-iterate_ms({ok,K,V}, Itr, Next, MS )->
-  Rec = {?DECODE_KEY(K),?DECODE_VALUE(V) },
-  case ets:match_spec_run([Rec], MS) of
+iterate_stop('$end_of_table', _Ref, _StopKey )->
+  [];
+iterate_stop(Key, Ref, StopKey ) when Key =< StopKey->
+  case ets:lookup(Ref, Key ) of
     [Res]->
-      [Res| iterate_ms( eleveldb:iterator_move(Itr,Next), Itr, Next, MS )];
+      [Res | iterate_stop(ets:next(Ref,Key), Ref, StopKey)];
     []->
-      iterate_ms( eleveldb:iterator_move(Itr,Next), Itr, Next, MS )
+      iterate_stop(ets:next(Ref,Key), Ref, StopKey )
   end;
-iterate_ms(_, _Itr, _Next, _MS )->
-  [].
-
-iterate_limit({ok,K,V}, Itr, Next, Limit) when Limit >0->
-  [{?DECODE_KEY(K),?DECODE_VALUE(V) } | iterate_limit( eleveldb:iterator_move(Itr,Next), Itr, Next, Limit-1 ) ];
-iterate_limit(_, _Itr, _Next, _Limit )->
-  [].
-
-iterate({ok,K,V}, Itr, Next)->
-  [{?DECODE_KEY(K),?DECODE_VALUE(V) } | iterate( eleveldb:iterator_move(Itr,Next), Itr, Next ) ];
-iterate(_, _Itr, _Next )->
+iterate_stop(_Key, _Ref, _StopKey )->
   [].
 
 %----------------------FOLD LEFT------------------------------------------
@@ -582,53 +400,3 @@ get_size( _R, 0 )->
 %%  todo.
 
 
-%%=================================================================
-%%	UTIL
-%%=================================================================
-maps_merge( Map1, Map2 )->
-  maps:fold(fun(K,V2,Acc)->
-    case Map1 of
-      #{K := V1} when is_map(V1),is_map(V2)->
-        Acc#{ K => maps_merge( V1,V2 ) };
-      _->
-        Acc#{ K => V2 }
-    end
-  end, Map1, Map2 ).
-
-
-ensure_dir( Path )->
-  case filelib:is_file( Path ) of
-    false->
-      case filelib:ensure_dir( Path++"/" ) of
-        ok -> ok;
-        {error,CreateError}->
-          ?LOGERROR("~s create error ~p",[ Path, CreateError ]),
-          throw({create_dir_error,CreateError})
-      end;
-    true->
-      remove_recursive( Path ),
-      ensure_dir( Path )
-  end.
-
-remove_recursive( Path )->
-  case filelib:is_dir( Path ) of
-    false->
-      case file:delete( Path ) of
-        ok->ok;
-        {error,DelError}->
-          ?LOGERROR("~s delete error ~p",[Path,DelError]),
-          throw({delete_error,DelError})
-      end;
-    true->
-      case file:list_dir_all( Path ) of
-        {ok,Files}->
-          [ remove_recursive(Path++"/"++F) || F <- Files ],
-          case file:del_dir( Path ) of
-            ok->
-              ok;
-            {error,DelError}->
-              ?LOGERROR("~s delete error ~p",[Path,DelError]),
-              throw({delete_error,DelError})
-          end
-      end
-  end.
