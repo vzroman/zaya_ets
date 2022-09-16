@@ -194,8 +194,19 @@ find(Ref, Query)->
             iterate_stop_limit(First, Ref, Stop, Limit );
           #{ stop:= Stop }->
             iterate_stop(First, Ref, Stop );
+          #{ms := MS, limit := Limit}->
+            CompiledMS = ets:match_spec_compile(MS),
+            iterate_ms_limit(First, Ref, CompiledMS, Limit );
+          #{ms := MS}->
+            CompiledMS = ets:match_spec_compile(MS),
+            iterate_ms(First, Ref, CompiledMS );
           _->
-            ets:tab2list( Ref )
+            case Query of
+              #{start:=_}->
+                iterate( First, Ref );
+              _->
+                ets:tab2list( Ref )
+            end
         end
   end.
 
@@ -246,6 +257,39 @@ iterate_stop(Key, Ref, StopKey ) when Key =< StopKey->
   end;
 iterate_stop(_Key, _Ref, _StopKey )->
   [].
+
+
+iterate_ms_limit('$end_of_table', _Ref, _MS, _Limit )->
+  [];
+iterate_ms_limit(Key, Ref, MS, Limit ) when Limit > 0 ->
+  case ets:match_spec_run(ets:lookup(Ref, Key ),MS) of
+    [Res]->
+      [Res | iterate_ms_limit(ets:next(Ref,Key), Ref, MS, Limit -1)];
+    []->
+      iterate_ms_limit(ets:next(Ref,Key), Ref, MS, Limit )
+  end;
+iterate_ms_limit(_Key, _Ref, _MS, _Limit )->
+  [].
+
+iterate_ms('$end_of_table', _Ref, _MS )->
+  [];
+iterate_ms(Key, Ref, MS )->
+  case ets:match_spec_run(ets:lookup(Ref, Key ),MS) of
+    [Res]->
+      [Res | iterate_ms(ets:next(Ref,Key), Ref, MS)];
+    []->
+      iterate_ms(ets:next(Ref,Key), Ref, MS )
+  end.
+
+iterate('$end_of_table', _Ref )->
+  [];
+iterate(Key, Ref )->
+  case ets:lookup(Ref, Key ) of
+    [Res]->
+      [Res | iterate(ets:next(Ref,Key), Ref)];
+    []->
+      iterate(ets:next(Ref,Key), Ref )
+  end.
 
 %----------------------FOLD LEFT------------------------------------------
 foldl( Ref, Query, UserFun, InAcc )->
