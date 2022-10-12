@@ -49,8 +49,8 @@
 %%=================================================================
 %%	SERVICE
 %%=================================================================
-create( _Params )->
-  ok.
+create( Params )->
+  open( Params ).
 
 open( _Params )->
   ets:new(?MODULE,[public,ordered_set]).
