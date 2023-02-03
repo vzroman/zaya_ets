@@ -53,7 +53,12 @@ create( Params )->
   open( Params ).
 
 open( _Params )->
-  ets:new(?MODULE,[public,ordered_set]).
+  ets:new(?MODULE,[
+    public,
+    ordered_set,
+    {read_concurrency, true},
+    {write_concurrency,auto}
+  ]).
 
 close( Ref )->
   catch ets:delete( Ref ),
