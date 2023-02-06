@@ -4,7 +4,9 @@
   {registered, []},
   {applications,
    [kernel,
-    stdlib
+    stdlib,
+   sext,
+   rocksdb
    ]},
   {env,[]},
   {modules, []},
