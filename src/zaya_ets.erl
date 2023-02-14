@@ -46,6 +46,7 @@
   get_size/1
 ]).
 
+-record(ref,{pid,ets}).
 %%=================================================================
 %%	SERVICE
 %%=================================================================
@@ -53,15 +54,25 @@ create( Params )->
   open( Params ).
 
 open( _Params )->
-  ets:new(?MODULE,[
-    public,
-    ordered_set,
-    {read_concurrency, true},
-    {write_concurrency, auto}
-  ]).
+  Self = self(),
+  PID = spawn_link(fun()-> do_open(Self) end),
+  receive
+    {PID, Ets}-> #ref{ pid = PID, ets = Ets }
+  end.
 
-close( Ref )->
-  catch ets:delete( Ref ),
+do_open(Owner)->
+  Ets = ets:new(?MODULE,[
+    protected,
+    ordered_set,
+    {read_concurrency, true}
+  ]),
+  Owner ! {self(), Ets},
+
+  write_loop( Ets, #{}, []).
+
+
+close( #ref{pid = PID} )->
+  exit( PID, shutdown ),
   ok.
 
 remove( _Params )->
@@ -70,8 +81,8 @@ remove( _Params )->
 %%=================================================================
 %%	LOW_LEVEL
 %%=================================================================
-read(Ref, [Key|Rest])->
-  case ets:lookup(Ref,Key) of
+read(#ref{ets = Ets} = Ref, [Key|Rest])->
+  case ets:lookup(Ets,Key) of
     [Rec]->
       [Rec | read(Ref, Rest)];
     _->
@@ -80,23 +91,55 @@ read(Ref, [Key|Rest])->
 read(_Ref,[])->
   [].
 
-write(Ref, KVs)->
-  ets:insert( Ref, KVs ),
-  ok.
+write(#ref{pid = PID}, KVs)->
+  PID ! {?MODULE, write, self(), KVs},
+  receive {PID,ok}->ok end.
 
-delete(Ref,Keys)->
-  [ ets:delete(Ref, K) || K <- Keys],
-  ok.
+delete(#ref{pid = PID}, Keys)->
+  PID ! {?MODULE, delete, self(), Keys},
+  receive {PID,ok}->ok end.
 
+write_loop( Ets, Buffer, PIDs )->
+  Timer =
+    if
+      PIDs =:= [] -> infinity;
+      true -> 0
+    end,
+  receive
+    {?MODULE, write, PID, KVs}->
+      write_loop( Ets, maps:merge(Buffer, maps:from_list( KVs )), [PID|PIDs] );
+    {?MODULE, delete, PID, Keys}->
+      write_loop( Ets, maps:merge(Buffer, maps:from_list([{K,{?MODULE,delete}} || K <- Keys] )), [PID|PIDs]);
+    _->
+      write_loop( Ets, Buffer, PIDs )
+  after
+    Timer->
+      flush_buffer(Ets, Buffer),
+      Self = self(),
+      [PID ! {Self,ok} || PID <- PIDs]
+  end.
+
+flush_buffer(Ets, Buffer)->
+  KVs =
+    maps:fold(fun(K,V,Acc)->
+      if
+        V=:={?MODULE,delete}->
+          ets:delete(Ets, K),
+          Acc;
+        true->
+          [{K,V}|Acc]
+      end
+    end,[], Buffer),
+  ets:insert(Ets, KVs).
 
 %%=================================================================
 %%	ITERATOR
 %%=================================================================
-first( Ref )->
-  case ets:first( Ref ) of
+first( #ref{ets = Ets} = Ref )->
+  case ets:first( Ets ) of
     '$end_of_table'-> throw( undefined );
     Key->
-      case ets:lookup(Ref, Key ) of
+      case ets:lookup(Ets, Key ) of
         [Rec]->
           Rec;
         _->
@@ -104,11 +147,11 @@ first( Ref )->
       end
   end.
 
-last( Ref )->
-  case ets:last( Ref ) of
+last( #ref{ets = Ets} = Ref )->
+  case ets:last( Ets ) of
     '$end_of_table'-> throw( undefined );
     Key->
-      case ets:lookup(Ref, Key ) of
+      case ets:lookup(Ets, Key ) of
         [Rec]->
           Rec;
         _->
@@ -116,21 +159,21 @@ last( Ref )->
       end
   end.
 
-next( Ref, Key )->
-  case ets:next( Ref, Key ) of
+next( #ref{ets = Ets} = Ref, Key )->
+  case ets:next( Ets, Key ) of
     '$end_of_table' -> throw( undefined );
     Next->
-      case ets:lookup( Ref, Next ) of
+      case ets:lookup( Ets, Next ) of
         [Rec]-> Rec;
         _-> next( Ref, Next )
       end
   end.
 
-prev( Ref, Key )->
-  case ets:prev( Ref, Key ) of
+prev( #ref{ets = Ets} = Ref, Key )->
+  case ets:prev( Ets, Key ) of
     '$end_of_table' -> throw( undefined );
     Prev->
-      case ets:lookup( Ref, Prev ) of
+      case ets:lookup( Ets, Prev ) of
         [Rec]-> Rec;
         _-> prev( Ref, Prev )
       end
@@ -140,12 +183,12 @@ prev( Ref, Key )->
 %%	HIGH-LEVEL API
 %%=================================================================
 %----------------------FIND------------------------------------------
-find(Ref, Query)->
+find(#ref{ets = Ets}, Query)->
   case {Query, maps:size( Query )} of
     { #{ ms := MS }, 1} ->
-      ets:select(Ref, MS);
+      ets:select(Ets, MS);
     { #{ms := MS, limit := Limit}, 2}->
-      case ets:select(Ref, MS, Limit) of
+      case ets:select(Ets, MS, Limit) of
         {Result, _Continuation}->
           Result;
         '$end_of_table' ->
@@ -155,31 +198,31 @@ find(Ref, Query)->
       First =
         case Query of
           #{ start := Start} -> Start;
-          _-> ets:first( Ref )
+          _-> ets:first( Ets )
         end,
         case Query of
           #{  stop := Stop, ms := MS, limit := Limit }->
             CompiledMS = ets:match_spec_compile(MS),
-            iterate_query(First, Ref, Stop, CompiledMS, Limit  );
+            iterate_query(First, Ets, Stop, CompiledMS, Limit  );
           #{  stop := Stop, ms := MS }->
             CompiledMS = ets:match_spec_compile(MS),
-            iterate_ms_stop(First, Ref, Stop, CompiledMS );
+            iterate_ms_stop(First, Ets, Stop, CompiledMS );
           #{ stop:= Stop, limit := Limit }->
-            iterate_stop_limit(First, Ref, Stop, Limit );
+            iterate_stop_limit(First, Ets, Stop, Limit );
           #{ stop:= Stop }->
-            iterate_stop(First, Ref, Stop );
+            iterate_stop(First, Ets, Stop );
           #{ms := MS, limit := Limit}->
             CompiledMS = ets:match_spec_compile(MS),
-            iterate_ms_limit(First, Ref, CompiledMS, Limit );
+            iterate_ms_limit(First, Ets, CompiledMS, Limit );
           #{ms := MS}->
             CompiledMS = ets:match_spec_compile(MS),
-            iterate_ms(First, Ref, CompiledMS );
+            iterate_ms(First, Ets, CompiledMS );
           _->
             case Query of
               #{start:=_}->
-                iterate( First, Ref );
+                iterate( First, Ets );
               _->
-                ets:tab2list( Ref )
+                ets:tab2list( Ets )
             end
         end
   end.
@@ -266,11 +309,11 @@ iterate(Key, Ref )->
   end.
 
 %----------------------FOLD LEFT------------------------------------------
-foldl( Ref, Query, UserFun, InAcc )->
+foldl( #ref{ets = Ets}, Query, UserFun, InAcc )->
   First =
     case Query of
       #{start := Start}-> Start;
-      _->ets:first( Ref )
+      _->ets:first( Ets )
     end,
   Fun =
     case Query of
@@ -291,9 +334,9 @@ foldl( Ref, Query, UserFun, InAcc )->
   try
     case Query of
       #{ stop:=Stop }->
-        do_foldl_stop( First, Ref, Fun, InAcc, Stop);
+        do_foldl_stop( First, Ets, Fun, InAcc, Stop);
       _->
-        do_foldl( First, Ref, Fun, InAcc )
+        do_foldl( First, Ets, Fun, InAcc )
     end
   catch
     {stop,Acc}->Acc
@@ -324,11 +367,11 @@ do_foldl( Key, Ref, Fun, InAcc )->
   end.
 
 %----------------------FOLD RIGHT------------------------------------------
-foldr( Ref, Query, UserFun, InAcc )->
+foldr( #ref{ets = Ets}, Query, UserFun, InAcc )->
   Last =
     case Query of
       #{start := Start}-> Start;
-      _->ets:last( Ref )
+      _->ets:last( Ets )
     end,
   Fun =
     case Query of
@@ -349,9 +392,9 @@ foldr( Ref, Query, UserFun, InAcc )->
   try
     case Query of
       #{ stop:=Stop }->
-        do_foldr_stop( Last, Ref, Fun, InAcc, Stop);
+        do_foldr_stop( Last, Ets, Fun, InAcc, Stop);
       _->
-        do_foldr( Last, Ref, Fun, InAcc )
+        do_foldr( Last, Ets, Fun, InAcc )
     end
   catch
     {stop,Acc}-> Acc
@@ -384,8 +427,8 @@ do_foldr( Key, Ref, Fun, InAcc )->
 %%=================================================================
 %%	INFO
 %%=================================================================
-get_size( Ref )->
-  erlang:system_info(wordsize) * ets:info( Ref, memory ).
+get_size( #ref{ets = Ets})->
+  erlang:system_info(wordsize) * ets:info( Ets, memory ).
 
 
 
