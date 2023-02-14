@@ -99,6 +99,12 @@ delete(#ref{pid = PID}, Keys)->
   PID ! {?MODULE, delete, self(), Keys},
   receive {PID,ok}->ok end.
 
+write_loop( Ets, Buffer, PIDs ) when map_size( Buffer ) > 10000 ->
+  flush_buffer(Ets, Buffer),
+  Self = self(),
+  [PID ! {Self,ok} || PID <- PIDs],
+  write_loop(Ets, #{}, []);
+
 write_loop( Ets, Buffer, PIDs )->
   Timer =
     if
@@ -116,7 +122,8 @@ write_loop( Ets, Buffer, PIDs )->
     Timer->
       flush_buffer(Ets, Buffer),
       Self = self(),
-      [PID ! {Self,ok} || PID <- PIDs]
+      [PID ! {Self,ok} || PID <- PIDs],
+      write_loop(Ets, #{}, [])
   end.
 
 flush_buffer(Ets, Buffer)->
