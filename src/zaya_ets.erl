@@ -46,6 +46,7 @@
   get_size/1
 ]).
 
+-record(ref,{ ets, pool }).
 %%=================================================================
 %%	SERVICE
 %%=================================================================
@@ -53,38 +54,108 @@ create( Params )->
   open( Params ).
 
 open( _Params )->
-  ets:new(?MODULE,[
+  Ets = ets:new(?MODULE,[
     public,
     ordered_set,
     {read_concurrency, true},
     {write_concurrency, auto}
-  ]).
+  ]),
 
-close( Ref )->
-  catch ets:delete( Ref ),
+  Pool = list_to_tuple([ spawn_link(fun()->loop( Ets) end) || _ <- lists:seq(1,8)]),
+  #ref{ ets = Ets, pool = Pool }.
+
+close( #ref{ets = Ets, pool = Pool} )->
+  [ exit(P, shutdown) || P <- tuple_to_list(Pool) ],
+  catch ets:delete( Ets ),
   ok.
 
 remove( _Params )->
   ok.
 
+
+-define(TRY( Exp ), try {ok,self(),Exp} catch _:E-> {error,self(),E} end).
+loop( Ets )->
+  receive
+    {read, PID, Keys}->
+      PID ! ?TRY( do_read( Ets, Keys ));
+    {write, PID, KVs}->
+      PID ! ?TRY( do_write( Ets, KVs ));
+    {delete, PID, Keys}->
+      PID ! ?TRY( do_delete( Ets, Keys ));
+    {first, PID}->
+      PID ! ?TRY( do_first( Ets ));
+    {last, PID}->
+      PID ! ?TRY( do_last( Ets ));
+    {next, PID, Key}->
+      PID ! ?TRY( do_next( Ets, Key ));
+    {prev, PID, Key}->
+      PID ! ?TRY( do_prev( Ets, Key ));
+    _->
+      ignore
+  end,
+
+  loop( Ets ).
+
+-define(pid(P), element(erlang:phash2(make_ref(), 8) + 1, Pool)).
+-define(result(P),
+  receive
+    {ok,P,_@Res} -> _@Res;
+    {error,P,_@Err} -> throw( _@Err )
+  end).
+
+read(#ref{pool = Pool}, Keys)->
+  PID = ?pid( Pool ),
+  PID ! { read, self(), Keys },
+  ?result( PID ).
+
+write(#ref{pool = Pool}, KVs)->
+  PID = ?pid( Pool ),
+  PID ! { write, self(), KVs },
+  ?result( PID ).
+
+delete(#ref{pool = Pool}, Keys)->
+  PID = ?pid( Pool ),
+  PID ! { delete, self(), Keys },
+  ?result( PID ).
+
+first(#ref{pool = Pool})->
+  PID = ?pid( Pool ),
+  PID ! { first, self() },
+  ?result( PID ).
+
+last(#ref{pool = Pool})->
+  PID = ?pid( Pool ),
+  PID ! { last, self() },
+  ?result( PID ).
+
+next(#ref{pool = Pool}, Key)->
+  PID = ?pid( Pool ),
+  PID ! { next, self(), Key },
+  ?result( PID ).
+
+prev(#ref{pool = Pool}, Key)->
+  PID = ?pid( Pool ),
+  PID ! { prev, self(), Key },
+  ?result( PID ).
+
 %%=================================================================
 %%	LOW_LEVEL
 %%=================================================================
-read(Ref, [Key|Rest])->
+do_read(Ref, [Key|Rest])->
   case ets:lookup(Ref,Key) of
     [Rec]->
-      [Rec | read(Ref, Rest)];
+      [Rec | do_read(Ref, Rest)];
     _->
-      read(Ref, Rest)
+      do_read(Ref, Rest)
   end;
-read(_Ref,[])->
+do_read(_Ref,[])->
   [].
 
-write(Ref, KVs)->
+do_write(Ref, KVs)->
   ets:insert( Ref, KVs ),
   ok.
 
-delete(Ref,Keys)->
+do_delete(Ref,Keys)->
   [ ets:delete(Ref, K) || K <- Keys],
   ok.
 
@@ -92,7 +163,7 @@ delete(Ref,Keys)->
 %%=================================================================
 %%	ITERATOR
 %%=================================================================
-first( Ref )->
+do_first( Ref )->
   case ets:first( Ref ) of
     '$end_of_table'-> throw( undefined );
     Key->
@@ -100,11 +171,11 @@ first( Ref )->
         [Rec]->
           Rec;
         _->
-          next( Ref, Key )
+          do_next( Ref, Key )
       end
   end.
 
-last( Ref )->
+do_last( Ref )->
   case ets:last( Ref ) of
     '$end_of_table'-> throw( undefined );
     Key->
@@ -112,27 +183,27 @@ last( Ref )->
         [Rec]->
           Rec;
         _->
-          prev( Ref, Key )
+          do_prev( Ref, Key )
       end
   end.
 
-next( Ref, Key )->
+do_next( Ref, Key )->
   case ets:next( Ref, Key ) of
     '$end_of_table' -> throw( undefined );
     Next->
       case ets:lookup( Ref, Next ) of
         [Rec]-> Rec;
-        _-> next( Ref, Next )
+        _-> do_next( Ref, Next )
       end
   end.
 
-prev( Ref, Key )->
+do_prev( Ref, Key )->
   case ets:prev( Ref, Key ) of
     '$end_of_table' -> throw( undefined );
     Prev->
       case ets:lookup( Ref, Prev ) of
         [Rec]-> Rec;
-        _-> prev( Ref, Prev )
+        _-> do_prev( Ref, Prev )
       end
   end.
 
@@ -140,7 +211,7 @@ prev( Ref, Key )->
 %%	HIGH-LEVEL API
 %%=================================================================
 %----------------------FIND------------------------------------------
-find(Ref, Query)->
+find(#ref{ ets = Ref }, Query)->
   case {Query, maps:size( Query )} of
     { #{ ms := MS }, 1} ->
       ets:select(Ref, MS);
@@ -266,7 +337,7 @@ iterate(Key, Ref )->
   end.
 
 %----------------------FOLD LEFT------------------------------------------
-foldl( Ref, Query, UserFun, InAcc )->
+foldl(#ref{ ets = Ref }, Query, UserFun, InAcc )->
   First =
     case Query of
       #{start := Start}-> Start;
@@ -324,7 +395,7 @@ do_foldl( Key, Ref, Fun, InAcc )->
   end.
 
 %----------------------FOLD RIGHT------------------------------------------
-foldr( Ref, Query, UserFun, InAcc )->
+foldr(#ref{ ets = Ref }, Query, UserFun, InAcc )->
   Last =
     case Query of
       #{start := Start}-> Start;
