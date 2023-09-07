@@ -102,7 +102,8 @@ delete(Ref,Keys)->
 %%=================================================================
 first( Ref )->
   case ets:first( Ref ) of
-    '$end_of_table'-> throw( undefined );
+    '$end_of_table'->
+      undefined ;
     Key->
       case ets:lookup(Ref, Key ) of
         [Rec]->
@@ -114,7 +115,8 @@ first( Ref )->
 
 last( Ref )->
   case ets:last( Ref ) of
-    '$end_of_table'-> throw( undefined );
+    '$end_of_table'->
+      undefined;
     Key->
       case ets:lookup(Ref, Key ) of
         [Rec]->
@@ -126,7 +128,8 @@ last( Ref )->
 
 next( Ref, Key )->
   case ets:next( Ref, Key ) of
-    '$end_of_table' -> throw( undefined );
+    '$end_of_table' ->
+      undefined;
     Next->
       case ets:lookup( Ref, Next ) of
         [Rec]-> Rec;
@@ -136,7 +139,8 @@ next( Ref, Key )->
 
 prev( Ref, Key )->
   case ets:prev( Ref, Key ) of
-    '$end_of_table' -> throw( undefined );
+    '$end_of_table' ->
+      undefined;
     Prev->
       case ets:lookup( Ref, Prev ) of
         [Rec]-> Rec;
@@ -157,7 +161,7 @@ find(Ref, Query)->
         {Result, _Continuation}->
           Result;
         '$end_of_table' ->
-          throw( undefined )
+          []
       end;
     _->
       First =
