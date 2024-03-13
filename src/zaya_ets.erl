@@ -437,11 +437,7 @@ t_delete( _Ref, TRef, Keys )->
   ok.
 
 commit(Ref, TRef)->
-  {Write, Delete} = write_delete( ets:tab2list( TRef ), {[],[]} ),
-  try
-    ets:insert( Ref, Write ),
-    ets:delete( Ref, Delete ),
-    ok
+  try write_delete( ets:tab2list( TRef ), Ref )
   after
     ets:delete( TRef )
   end.
@@ -456,12 +452,14 @@ rollback( _Ref, TRef )->
   ets:delete( TRef ),
   ok.
 
-write_delete([{K, ?none}|Rest], {Write, Delete})->
-  write_delete( Rest, { Write, [ K | Delete ] } );
-write_delete([E|Rest], {Write, Delete})->
-  write_delete( Rest, { [E|Write], Delete} );
-write_delete([], Acc)->
-  Acc.
+write_delete([{K, ?none}|Rest], Ref)->
+  ets:delete( Ref, K ),
+  write_delete( Rest, Ref );
+write_delete([E|Rest], Ref)->
+  ets:insert( Ref, E ),
+  write_delete( Rest, Ref );
+write_delete([], _Ref)->
+  ok.
 
 
 %%=================================================================
