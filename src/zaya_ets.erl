@@ -67,6 +67,8 @@
   get_size/1
 ]).
 
+-define(none, {?MODULE, undefined}).
+
 %%=================================================================
 %%	SERVICE
 %%=================================================================
@@ -431,12 +433,14 @@ t_write( _Ref, TRef, KVs )->
   ok.
 
 t_delete( _Ref, TRef, Keys )->
-  [ ets:delete(TRef, K) || K <- Keys],
+  ets:insert( TRef, [{K, ?none} || K <- Keys] ),
   ok.
 
 commit(Ref, TRef)->
+  {Write, Delete} = write_delete( ets:tab2list( TRef ), {[],[]} ),
   try
-    ets:insert( Ref, ets:tab2list( TRef ) ),
+    ets:insert( Ref, Write ),
+    ets:delete( Ref, Delete ),
     ok
   after
     ets:delete( TRef )
@@ -451,6 +455,14 @@ commit2(Ref, TRef)->
 rollback( _Ref, TRef )->
   ets:delete( TRef ),
   ok.
+
+write_delete([{K, ?none}|Rest], {Write, Delete})->
+  write_delete( Rest, { Write, [ K | Delete ] } );
+write_delete([E|Rest], {Write, Delete})->
+  write_delete( Rest, { [E|Write], Delete} );
+write_delete([], Acc)->
+  Acc.
+
 
 %%=================================================================
 %%	INFO
