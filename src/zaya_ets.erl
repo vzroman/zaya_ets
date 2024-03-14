@@ -426,9 +426,7 @@ commit1(_Ref, Write, Delete)->
   {Write, Delete}.
 
 commit2(Ref, {Write, Delete})->
-  ets:insert( Ref, Write ),
-  [ets:delete( Ref, K ) || K <- Delete],
-  ok.
+  commit( Ref, Write, Delete ).
 
 rollback( _Ref, _TRef )->
   ok.
