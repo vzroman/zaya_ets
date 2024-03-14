@@ -51,11 +51,7 @@
 %%	TRANSACTION API
 %%=================================================================
 -export([
-  transaction/1,
-  t_write/3,
-  t_delete/3,
-  commit/2,
-  commit1/2,
+  commit1/3,
   commit2/2,
   rollback/2
 ]).
@@ -420,46 +416,17 @@ dump_batch(Ref, KVs)->
 %%=================================================================
 %%	TRANSACTION API
 %%=================================================================
-transaction( _Ref )->
-  ets:new(?MODULE,[
-    private,
-    ordered_set,
-    {read_concurrency, true},
-    {write_concurrency, auto}
-  ]).
+commit1(_Ref, Write, Delete)->
+  {Write, Delete}.
 
-t_write( _Ref, TRef, KVs )->
-  ets:insert( TRef, KVs ),
+commit2(Ref, {Write, Delete})->
+  ets:insert( Ref, Write ),
+  [ets:delete( Ref, K ) || K <- Delete],
   ok.
 
-t_delete( _Ref, TRef, Keys )->
-  ets:insert( TRef, [{K, ?none} || K <- Keys] ),
+rollback( _Ref, _TRef )->
   ok.
 
-commit(Ref, TRef)->
-  try write_delete( ets:tab2list( TRef ), Ref )
-  after
-    ets:delete( TRef )
-  end.
-
-commit1(_Ref, _TRef)->
-  ok.
-
-commit2(Ref, TRef)->
-  commit( Ref, TRef ).
-
-rollback( _Ref, TRef )->
-  ets:delete( TRef ),
-  ok.
-
-write_delete([{K, ?none}|Rest], Ref)->
-  ets:delete( Ref, K ),
-  write_delete( Rest, Ref );
-write_delete([E|Rest], Ref)->
-  ets:insert( Ref, E ),
-  write_delete( Rest, Ref );
-write_delete([], _Ref)->
-  ok.
 
 %%=================================================================
 %%	INFO
