@@ -418,8 +418,8 @@ dump_batch(Ref, KVs)->
 %%	TRANSACTION API
 %%=================================================================
 commit(Ref, Write, Delete)->
-  ets:insert( Ref, Write ),
-  [ets:delete( Ref, K ) || K <- Delete],
+  write( Ref, Write ),
+  delete( Ref, Delete ),
   ok.
 
 commit1(_Ref, Write, Delete)->
