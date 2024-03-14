@@ -51,6 +51,7 @@
 %%	TRANSACTION API
 %%=================================================================
 -export([
+  commit/3,
   commit1/3,
   commit2/2,
   rollback/2
@@ -416,6 +417,11 @@ dump_batch(Ref, KVs)->
 %%=================================================================
 %%	TRANSACTION API
 %%=================================================================
+commit(Ref, Write, Delete)->
+  ets:insert( Ref, Write ),
+  [ets:delete( Ref, K ) || K <- Delete],
+  ok.
+
 commit1(_Ref, Write, Delete)->
   {Write, Delete}.
 
