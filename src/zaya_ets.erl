@@ -77,7 +77,7 @@ open( _Params )->
     public,
     ordered_set,
     {read_concurrency, true},
-    {write_concurrency, auto}
+    {write_concurrency, true}
   ]).
 
 close( Ref )->
