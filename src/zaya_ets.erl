@@ -113,51 +113,35 @@ delete(Ref,Keys)->
 %%	ITERATOR
 %%=================================================================
 first( Ref )->
-  case ets:first( Ref ) of
+  case ets:first_lookup( Ref ) of
     '$end_of_table'->
       undefined ;
-    Key->
-      case ets:lookup(Ref, Key ) of
-        [Rec]->
-          Rec;
-        _->
-          next( Ref, Key )
-      end
+    {_First, [Rec]}->
+      Rec
   end.
 
 last( Ref )->
-  case ets:last( Ref ) of
+  case ets:last_lookup( Ref ) of
     '$end_of_table'->
       undefined;
-    Key->
-      case ets:lookup(Ref, Key ) of
-        [Rec]->
-          Rec;
-        _->
-          prev( Ref, Key )
-      end
+    {_Last, [Rec]}->
+      Rec
   end.
 
 next( Ref, Key )->
-  case ets:next( Ref, Key ) of
+  case ets:next_lookup( Ref, Key ) of
     '$end_of_table' ->
       undefined;
-    Next->
-      case ets:lookup( Ref, Next ) of
-        [Rec]-> Rec;
-        _-> next( Ref, Next )
-      end
+    {_Next, [Rec]}->
+      Rec
   end.
 
 prev( Ref, Key )->
-  case ets:prev( Ref, Key ) of
+  case ets:prev_lookup( Ref, Key ) of
     '$end_of_table' ->
       undefined;
-    Prev->
-      case ets:lookup( Ref, Prev ) of
-        [Rec]-> Rec;
-        _-> prev( Ref, Prev )
-      end
+    {_Prev, [Rec]}->
+      Rec
   end.
 
 %%=================================================================
