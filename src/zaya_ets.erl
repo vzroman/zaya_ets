@@ -68,8 +68,6 @@
   pool
 }).
 
--define(none, {?MODULE, undefined}).
-
 %%=================================================================
 %%	SERVICE
 %%=================================================================
@@ -107,8 +105,7 @@ remove(_Params)->
 %%=================================================================
 %%	LOW_LEVEL
 %%=================================================================
-read(Ref, [Key | Rest])->
-  Table = table(Ref),
+read(#ref{table = Table} = Ref, [Key | Rest])->
   case ets:lookup(Table, Key) of
     [Rec]->
       [Rec | read(Ref, Rest)];
@@ -118,17 +115,18 @@ read(Ref, [Key | Rest])->
 read(_Ref, [])->
   [].
 
-write(Ref, KVs)->
-  zaya_ets_writer_pool:call(pool(Ref), {ops, normalize_write(KVs)}).
+write(#ref{pool = Pool}, KVs)->
+  Writes = [{write, KVs}],
+  zaya_ets_writer_pool:call(Pool, Writes).
 
-delete(Ref, Keys)->
-  zaya_ets_writer_pool:call(pool(Ref), {ops, normalize_delete(Keys)}).
+delete(#ref{pool = Pool}, Keys)->
+  Deletes = [{delete, Keys}],
+  zaya_ets_writer_pool:call(Pool, Deletes).
 
 %%=================================================================
 %%	ITERATOR
 %%=================================================================
-first(Ref)->
-  Table = table(Ref),
+first(#ref{table = Table})->
   case ets:first_lookup(Table) of
     '$end_of_table'->
       undefined;
@@ -136,8 +134,7 @@ first(Ref)->
       Rec
   end.
 
-last(Ref)->
-  Table = table(Ref),
+last(#ref{table = Table})->
   case ets:last_lookup(Table) of
     '$end_of_table'->
       undefined;
@@ -145,8 +142,7 @@ last(Ref)->
       Rec
   end.
 
-next(Ref, Key)->
-  Table = table(Ref),
+next(#ref{table = Table}, Key)->
   case ets:next_lookup(Table, Key) of
     '$end_of_table' ->
       undefined;
@@ -154,8 +150,7 @@ next(Ref, Key)->
       Rec
   end.
 
-prev(Ref, Key)->
-  Table = table(Ref),
+prev(#ref{table = Table}, Key)->
   case ets:prev_lookup(Table, Key) of
     '$end_of_table' ->
       undefined;
@@ -167,8 +162,7 @@ prev(Ref, Key)->
 %%	HIGH-LEVEL API
 %%=================================================================
 %----------------------FIND------------------------------------------
-find(Ref, Query)->
-  Table = table(Ref),
+find(#ref{table = Table}, Query)->
   case {Query, maps:size(Query)} of
     {#{ms := MS}, 1} ->
       ets:select(Table, MS);
@@ -188,120 +182,112 @@ find(Ref, Query)->
       case Query of
         #{stop := Stop, ms := MS, limit := Limit }->
           CompiledMS = ets:match_spec_compile(MS),
-          iterate_query(First, Ref, Stop, CompiledMS, Limit);
+          iterate_query(First, Table, Stop, CompiledMS, Limit);
         #{stop := Stop, ms := MS }->
           CompiledMS = ets:match_spec_compile(MS),
-          iterate_ms_stop(First, Ref, Stop, CompiledMS);
+          iterate_ms_stop(First, Table, Stop, CompiledMS);
         #{stop := Stop, limit := Limit }->
-          iterate_stop_limit(First, Ref, Stop, Limit);
+          iterate_stop_limit(First, Table, Stop, Limit);
         #{stop := Stop }->
-          iterate_stop(First, Ref, Stop);
+          iterate_stop(First, Table, Stop);
         #{ms := MS, limit := Limit}->
           CompiledMS = ets:match_spec_compile(MS),
-          iterate_ms_limit(First, Ref, CompiledMS, Limit);
+          iterate_ms_limit(First, Table, CompiledMS, Limit);
         #{ms := MS}->
           CompiledMS = ets:match_spec_compile(MS),
-          iterate_ms(First, Ref, CompiledMS);
+          iterate_ms(First, Table, CompiledMS);
         _->
           case Query of
             #{start := _}->
-              iterate(First, Ref);
+              iterate(First, Table);
             _->
               ets:tab2list(Table)
           end
       end
   end.
 
-iterate_query('$end_of_table', _Ref, _StopKey, _MS, _Limit)->
+iterate_query('$end_of_table', _Table, _StopKey, _MS, _Limit)->
   [];
-iterate_query(Key, Ref, StopKey, MS, Limit) when Key =< StopKey, Limit > 0->
-  Table = table(Ref),
+iterate_query(Key, Table, StopKey, MS, Limit) when Key =< StopKey, Limit > 0->
   case ets:match_spec_run(ets:lookup(Table, Key), MS) of
     [Res]->
-      [Res | iterate_query(ets:next(Table, Key), Ref, StopKey, MS, Limit - 1)];
+      [Res | iterate_query(ets:next(Table, Key), Table, StopKey, MS, Limit - 1)];
     []->
-      iterate_query(ets:next(Table, Key), Ref, StopKey, MS, Limit)
+      iterate_query(ets:next(Table, Key), Table, StopKey, MS, Limit)
   end;
-iterate_query(_Key, _Ref, _StopKey, _MS, _Limit)->
+iterate_query(_Key, _Table, _StopKey, _MS, _Limit)->
   [].
 
-iterate_ms_stop('$end_of_table', _Ref, _StopKey, _MS)->
+iterate_ms_stop('$end_of_table', _Table, _StopKey, _MS)->
   [];
-iterate_ms_stop(Key, Ref, StopKey, MS) when Key =< StopKey->
-  Table = table(Ref),
+iterate_ms_stop(Key, Table, StopKey, MS) when Key =< StopKey->
   case ets:match_spec_run(ets:lookup(Table, Key), MS) of
     [Res]->
-      [Res | iterate_ms_stop(ets:next(Table, Key), Ref, StopKey, MS)];
+      [Res | iterate_ms_stop(ets:next(Table, Key), Table, StopKey, MS)];
     []->
-      iterate_ms_stop(ets:next(Table, Key), Ref, StopKey, MS)
+      iterate_ms_stop(ets:next(Table, Key), Table, StopKey, MS)
   end;
-iterate_ms_stop(_Key, _Ref, _StopKey, _MS)->
+iterate_ms_stop(_Key, _Table, _StopKey, _MS)->
   [].
 
-iterate_stop_limit('$end_of_table', _Ref, _StopKey, _Limit)->
+iterate_stop_limit('$end_of_table', _Table, _StopKey, _Limit)->
   [];
-iterate_stop_limit(Key, Ref, StopKey, Limit) when Key =< StopKey, Limit > 0->
-  Table = table(Ref),
+iterate_stop_limit(Key, Table, StopKey, Limit) when Key =< StopKey, Limit > 0->
   case ets:lookup(Table, Key) of
     [Res]->
-      [Res | iterate_stop_limit(ets:next(Table, Key), Ref, StopKey, Limit - 1)];
+      [Res | iterate_stop_limit(ets:next(Table, Key), Table, StopKey, Limit - 1)];
     []->
-      iterate_stop_limit(ets:next(Table, Key), Ref, StopKey, Limit)
+      iterate_stop_limit(ets:next(Table, Key), Table, StopKey, Limit)
   end;
-iterate_stop_limit(_Key, _Ref, _StopKey, _Limit)->
+iterate_stop_limit(_Key, _Table, _StopKey, _Limit)->
   [].
 
-iterate_stop('$end_of_table', _Ref, _StopKey)->
+iterate_stop('$end_of_table', _Table, _StopKey)->
   [];
-iterate_stop(Key, Ref, StopKey) when Key =< StopKey->
-  Table = table(Ref),
+iterate_stop(Key, Table, StopKey) when Key =< StopKey->
   case ets:lookup(Table, Key) of
     [Res]->
-      [Res | iterate_stop(ets:next(Table, Key), Ref, StopKey)];
+      [Res | iterate_stop(ets:next(Table, Key), Table, StopKey)];
     []->
-      iterate_stop(ets:next(Table, Key), Ref, StopKey)
+      iterate_stop(ets:next(Table, Key), Table, StopKey)
   end;
-iterate_stop(_Key, _Ref, _StopKey)->
+iterate_stop(_Key, _Table, _StopKey)->
   [].
 
-iterate_ms_limit('$end_of_table', _Ref, _MS, _Limit)->
+iterate_ms_limit('$end_of_table', _Table, _MS, _Limit)->
   [];
-iterate_ms_limit(Key, Ref, MS, Limit) when Limit > 0 ->
-  Table = table(Ref),
+iterate_ms_limit(Key, Table, MS, Limit) when Limit > 0 ->
   case ets:match_spec_run(ets:lookup(Table, Key), MS) of
     [Res]->
-      [Res | iterate_ms_limit(ets:next(Table, Key), Ref, MS, Limit - 1)];
+      [Res | iterate_ms_limit(ets:next(Table, Key), Table, MS, Limit - 1)];
     []->
-      iterate_ms_limit(ets:next(Table, Key), Ref, MS, Limit)
+      iterate_ms_limit(ets:next(Table, Key), Table, MS, Limit)
   end;
-iterate_ms_limit(_Key, _Ref, _MS, _Limit)->
+iterate_ms_limit(_Key, _Table, _MS, _Limit)->
   [].
 
-iterate_ms('$end_of_table', _Ref, _MS)->
+iterate_ms('$end_of_table', _Table, _MS)->
   [];
-iterate_ms(Key, Ref, MS)->
-  Table = table(Ref),
+iterate_ms(Key, Table, MS)->
   case ets:match_spec_run(ets:lookup(Table, Key), MS) of
     [Res]->
-      [Res | iterate_ms(ets:next(Table, Key), Ref, MS)];
+      [Res | iterate_ms(ets:next(Table, Key), Table, MS)];
     []->
-      iterate_ms(ets:next(Table, Key), Ref, MS)
+      iterate_ms(ets:next(Table, Key), Table, MS)
   end.
 
-iterate('$end_of_table', _Ref)->
+iterate('$end_of_table', _Table)->
   [];
-iterate(Key, Ref)->
-  Table = table(Ref),
+iterate(Key, Table)->
   case ets:lookup(Table, Key) of
     [Res]->
-      [Res | iterate(ets:next(Table, Key), Ref)];
+      [Res | iterate(ets:next(Table, Key), Table)];
     []->
-      iterate(ets:next(Table, Key), Ref)
+      iterate(ets:next(Table, Key), Table)
   end.
 
 %----------------------FOLD LEFT------------------------------------------
-foldl(Ref, Query, UserFun, InAcc)->
-  Table = table(Ref),
+foldl(#ref{table = Table}, Query, UserFun, InAcc)->
   First =
     case Query of
       #{start := Start}-> Start;
@@ -326,43 +312,40 @@ foldl(Ref, Query, UserFun, InAcc)->
   try
     case Query of
       #{stop := Stop }->
-        do_foldl_stop(First, Ref, Fun, InAcc, Stop);
+        do_foldl_stop(First, Table, Fun, InAcc, Stop);
       _->
-        do_foldl(First, Ref, Fun, InAcc)
+        do_foldl(First, Table, Fun, InAcc)
     end
   catch
     {stop, Acc}->Acc
   end.
 
-do_foldl_stop('$end_of_table', _Ref, _Fun, Acc, _StopKey)->
+do_foldl_stop('$end_of_table', _Table, _Fun, Acc, _StopKey)->
   Acc;
-do_foldl_stop(Key, Ref, Fun, InAcc, StopKey) when Key =< StopKey->
-  Table = table(Ref),
+do_foldl_stop(Key, Table, Fun, InAcc, StopKey) when Key =< StopKey->
   case ets:lookup(Table, Key) of
     [Rec]->
       Acc = Fun(Rec, InAcc),
-      do_foldl_stop(ets:next(Table, Key), Ref, Fun, Acc, StopKey);
+      do_foldl_stop(ets:next(Table, Key), Table, Fun, Acc, StopKey);
     []->
-      do_foldl_stop(ets:next(Table, Key), Ref, Fun, InAcc, StopKey)
+      do_foldl_stop(ets:next(Table, Key), Table, Fun, InAcc, StopKey)
   end;
-do_foldl_stop(_Key, _Ref, _Fun, Acc, _StopKey)->
+do_foldl_stop(_Key, _Table, _Fun, Acc, _StopKey)->
   Acc.
 
-do_foldl('$end_of_table', _Ref, _Fun, Acc)->
+do_foldl('$end_of_table', _Table, _Fun, Acc)->
   Acc;
-do_foldl(Key, Ref, Fun, InAcc)->
-  Table = table(Ref),
+do_foldl(Key, Table, Fun, InAcc)->
   case ets:lookup(Table, Key) of
     [Rec]->
       Acc = Fun(Rec, InAcc),
-      do_foldl(ets:next(Table, Key), Ref, Fun, Acc);
+      do_foldl(ets:next(Table, Key), Table, Fun, Acc);
     []->
-      do_foldl(ets:next(Table, Key), Ref, Fun, InAcc)
+      do_foldl(ets:next(Table, Key), Table, Fun, InAcc)
   end.
 
 %----------------------FOLD RIGHT------------------------------------------
-foldr(Ref, Query, UserFun, InAcc)->
-  Table = table(Ref),
+foldr(#ref{table = Table}, Query, UserFun, InAcc)->
   Last =
     case Query of
       #{start := Start}-> Start;
@@ -387,38 +370,36 @@ foldr(Ref, Query, UserFun, InAcc)->
   try
     case Query of
       #{stop := Stop }->
-        do_foldr_stop(Last, Ref, Fun, InAcc, Stop);
+        do_foldr_stop(Last, Table, Fun, InAcc, Stop);
       _->
-        do_foldr(Last, Ref, Fun, InAcc)
+        do_foldr(Last, Table, Fun, InAcc)
     end
   catch
     {stop, Acc}-> Acc
   end.
 
-do_foldr_stop('$end_of_table', _Ref, _Fun, Acc, _StopKey)->
+do_foldr_stop('$end_of_table', _Table, _Fun, Acc, _StopKey)->
   Acc;
-do_foldr_stop(Key, Ref, Fun, InAcc, StopKey) when Key >= StopKey->
-  Table = table(Ref),
+do_foldr_stop(Key, Table, Fun, InAcc, StopKey) when Key >= StopKey->
   case ets:lookup(Table, Key) of
     [Rec]->
       Acc = Fun(Rec, InAcc),
-      do_foldr_stop(ets:prev(Table, Key), Ref, Fun, Acc, StopKey);
+      do_foldr_stop(ets:prev(Table, Key), Table, Fun, Acc, StopKey);
     []->
-      do_foldr_stop(ets:prev(Table, Key), Ref, Fun, InAcc, StopKey)
+      do_foldr_stop(ets:prev(Table, Key), Table, Fun, InAcc, StopKey)
   end;
-do_foldr_stop(_Key, _Ref, _Fun, Acc, _StopKey)->
+do_foldr_stop(_Key, _Table, _Fun, Acc, _StopKey)->
   Acc.
 
-do_foldr('$end_of_table', _Ref, _Fun, Acc)->
+do_foldr('$end_of_table', _Table, _Fun, Acc)->
   Acc;
-do_foldr(Key, Ref, Fun, InAcc)->
-  Table = table(Ref),
+do_foldr(Key, Table, Fun, InAcc)->
   case ets:lookup(Table, Key) of
     [Rec]->
       Acc = Fun(Rec, InAcc),
-      do_foldr(ets:prev(Table, Key), Ref, Fun, Acc);
+      do_foldr(ets:prev(Table, Key), Table, Fun, Acc);
     []->
-      do_foldr(ets:prev(Table, Key), Ref, Fun, InAcc)
+      do_foldr(ets:prev(Table, Key), Table, Fun, InAcc)
   end.
 
 %%=================================================================
@@ -427,20 +408,22 @@ do_foldr(Key, Ref, Fun, InAcc)->
 copy(Ref, Fun, InAcc)->
   foldl(Ref, #{}, Fun, InAcc).
 
-dump_batch(Ref, KVs)->
-  do_dump_batch(table(Ref), KVs).
+dump_batch(#ref{table = Table}, KVs)->
+  do_dump_batch(Table, KVs).
 
 %%=================================================================
 %%	TRANSACTION API
 %%=================================================================
-commit(Ref, Write, Delete)->
-  zaya_ets_writer_pool:call(pool(Ref), {ops, normalize_commit(Write, Delete)}).
+commit(#ref{pool = Pool}, Write, Delete)->
+  Commits = [{write,Write}, {delete, Delete}],
+  zaya_ets_writer_pool:call(Pool, Commits).
 
 commit1(_Ref, Write, Delete)->
   {Write, Delete}.
 
-commit2(Ref, {Write, Delete})->
-  zaya_ets_writer_pool:call(pool(Ref), {ops, normalize_commit(Write, Delete)}).
+commit2(#ref{pool = Pool}, {Write, Delete})->
+  Commits = [{write,Write}, {delete, Delete}],
+  zaya_ets_writer_pool:call(Pool, Commits).
 
 rollback(_Ref, _TRef)->
   ok.
@@ -448,26 +431,12 @@ rollback(_Ref, _TRef)->
 %%=================================================================
 %%	INFO
 %%=================================================================
-get_size(Ref)->
-  erlang:system_info(wordsize) * ets:info(table(Ref), memory).
+get_size(#ref{table = Table})->
+  erlang:system_info(wordsize) * ets:info(Table, memory).
 
 %%=================================================================
 %%	INTERNAL
 %%=================================================================
-table(#ref{table = Table})->
-  Table.
-
-pool(#ref{pool = Pool})->
-  Pool.
-
-normalize_write(KVs)->
-  [{put, Key, Value} || {Key, Value} <- KVs].
-
-normalize_delete(Keys)->
-  [{delete, Key} || Key <- Keys].
-
-normalize_commit(Write, Delete)->
-  normalize_write(Write) ++ normalize_delete(Delete).
 
 do_dump_batch(_Table, [])->
   ok;
