@@ -188,11 +188,7 @@ find(#ref{table = Table}, Query)->
           []
       end;
     _->
-      First =
-        case Query of
-          #{start := Start} -> Start;
-          _-> ets:first(Table)
-        end,
+      First = forward_start_lookup(Table, Query),
       case Query of
         #{stop := Stop, ms := MS, limit := Limit }->
           CompiledMS = ets:match_spec_compile(MS),
@@ -222,91 +218,72 @@ find(#ref{table = Table}, Query)->
 
 iterate_query('$end_of_table', _Table, _StopKey, _MS, _Limit)->
   [];
-iterate_query(Key, Table, StopKey, MS, Limit) when Key =< StopKey, Limit > 0->
-  case ets:match_spec_run(ets:lookup(Table, Key), MS) of
+iterate_query({Key, Objects}, Table, StopKey, MS, Limit) when Key =< StopKey, Limit > 0->
+  case ets:match_spec_run(Objects, MS) of
     [Res]->
-      [Res | iterate_query(ets:next(Table, Key), Table, StopKey, MS, Limit - 1)];
+      [Res | iterate_query(ets:next_lookup(Table, Key), Table, StopKey, MS, Limit - 1)];
     []->
-      iterate_query(ets:next(Table, Key), Table, StopKey, MS, Limit)
+      iterate_query(ets:next_lookup(Table, Key), Table, StopKey, MS, Limit)
   end;
 iterate_query(_Key, _Table, _StopKey, _MS, _Limit)->
   [].
 
 iterate_ms_stop('$end_of_table', _Table, _StopKey, _MS)->
   [];
-iterate_ms_stop(Key, Table, StopKey, MS) when Key =< StopKey->
-  case ets:match_spec_run(ets:lookup(Table, Key), MS) of
+iterate_ms_stop({Key, Objects}, Table, StopKey, MS) when Key =< StopKey->
+  case ets:match_spec_run(Objects, MS) of
     [Res]->
-      [Res | iterate_ms_stop(ets:next(Table, Key), Table, StopKey, MS)];
+      [Res | iterate_ms_stop(ets:next_lookup(Table, Key), Table, StopKey, MS)];
     []->
-      iterate_ms_stop(ets:next(Table, Key), Table, StopKey, MS)
+      iterate_ms_stop(ets:next_lookup(Table, Key), Table, StopKey, MS)
   end;
 iterate_ms_stop(_Key, _Table, _StopKey, _MS)->
   [].
 
 iterate_stop_limit('$end_of_table', _Table, _StopKey, _Limit)->
   [];
-iterate_stop_limit(Key, Table, StopKey, Limit) when Key =< StopKey, Limit > 0->
-  case ets:lookup(Table, Key) of
-    [Res]->
-      [Res | iterate_stop_limit(ets:next(Table, Key), Table, StopKey, Limit - 1)];
-    []->
-      iterate_stop_limit(ets:next(Table, Key), Table, StopKey, Limit)
-  end;
+iterate_stop_limit({Key, [Res]}, Table, StopKey, Limit) when Key =< StopKey, Limit > 0->
+  [Res | iterate_stop_limit(ets:next_lookup(Table, Key), Table, StopKey, Limit - 1)];
 iterate_stop_limit(_Key, _Table, _StopKey, _Limit)->
   [].
 
 iterate_stop('$end_of_table', _Table, _StopKey)->
   [];
-iterate_stop(Key, Table, StopKey) when Key =< StopKey->
-  case ets:lookup(Table, Key) of
-    [Res]->
-      [Res | iterate_stop(ets:next(Table, Key), Table, StopKey)];
-    []->
-      iterate_stop(ets:next(Table, Key), Table, StopKey)
-  end;
+iterate_stop({Key, [Res]}, Table, StopKey) when Key =< StopKey->
+  [Res | iterate_stop(ets:next_lookup(Table, Key), Table, StopKey)];
 iterate_stop(_Key, _Table, _StopKey)->
   [].
 
 iterate_ms_limit('$end_of_table', _Table, _MS, _Limit)->
   [];
-iterate_ms_limit(Key, Table, MS, Limit) when Limit > 0 ->
-  case ets:match_spec_run(ets:lookup(Table, Key), MS) of
+iterate_ms_limit({Key, Objects}, Table, MS, Limit) when Limit > 0 ->
+  case ets:match_spec_run(Objects, MS) of
     [Res]->
-      [Res | iterate_ms_limit(ets:next(Table, Key), Table, MS, Limit - 1)];
+      [Res | iterate_ms_limit(ets:next_lookup(Table, Key), Table, MS, Limit - 1)];
     []->
-      iterate_ms_limit(ets:next(Table, Key), Table, MS, Limit)
+      iterate_ms_limit(ets:next_lookup(Table, Key), Table, MS, Limit)
   end;
 iterate_ms_limit(_Key, _Table, _MS, _Limit)->
   [].
 
 iterate_ms('$end_of_table', _Table, _MS)->
   [];
-iterate_ms(Key, Table, MS)->
-  case ets:match_spec_run(ets:lookup(Table, Key), MS) of
+iterate_ms({Key, Objects}, Table, MS)->
+  case ets:match_spec_run(Objects, MS) of
     [Res]->
-      [Res | iterate_ms(ets:next(Table, Key), Table, MS)];
+      [Res | iterate_ms(ets:next_lookup(Table, Key), Table, MS)];
     []->
-      iterate_ms(ets:next(Table, Key), Table, MS)
+      iterate_ms(ets:next_lookup(Table, Key), Table, MS)
   end.
 
 iterate('$end_of_table', _Table)->
   [];
-iterate(Key, Table)->
-  case ets:lookup(Table, Key) of
-    [Res]->
-      [Res | iterate(ets:next(Table, Key), Table)];
-    []->
-      iterate(ets:next(Table, Key), Table)
-  end.
+iterate({Key, [Res]}, Table)->
+  [Res | iterate(ets:next_lookup(Table, Key), Table)].
 
 %----------------------FOLD LEFT------------------------------------------
 foldl(#ref{table = Table}, Query, UserFun, InAcc)->
-  First =
-    case Query of
-      #{start := Start}-> Start;
-      _-> ets:first(Table)
-    end,
+  First = forward_start_lookup(Table, Query),
   Fun =
     case Query of
       #{ms := MS}->
@@ -336,35 +313,21 @@ foldl(#ref{table = Table}, Query, UserFun, InAcc)->
 
 do_foldl_stop('$end_of_table', _Table, _Fun, Acc, _StopKey)->
   Acc;
-do_foldl_stop(Key, Table, Fun, InAcc, StopKey) when Key =< StopKey->
-  case ets:lookup(Table, Key) of
-    [Rec]->
-      Acc = Fun(Rec, InAcc),
-      do_foldl_stop(ets:next(Table, Key), Table, Fun, Acc, StopKey);
-    []->
-      do_foldl_stop(ets:next(Table, Key), Table, Fun, InAcc, StopKey)
-  end;
+do_foldl_stop({Key, [Rec]}, Table, Fun, InAcc, StopKey) when Key =< StopKey->
+  Acc = Fun(Rec, InAcc),
+  do_foldl_stop(ets:next_lookup(Table, Key), Table, Fun, Acc, StopKey);
 do_foldl_stop(_Key, _Table, _Fun, Acc, _StopKey)->
   Acc.
 
 do_foldl('$end_of_table', _Table, _Fun, Acc)->
   Acc;
-do_foldl(Key, Table, Fun, InAcc)->
-  case ets:lookup(Table, Key) of
-    [Rec]->
-      Acc = Fun(Rec, InAcc),
-      do_foldl(ets:next(Table, Key), Table, Fun, Acc);
-    []->
-      do_foldl(ets:next(Table, Key), Table, Fun, InAcc)
-  end.
+do_foldl({Key, [Rec]}, Table, Fun, InAcc)->
+  Acc = Fun(Rec, InAcc),
+  do_foldl(ets:next_lookup(Table, Key), Table, Fun, Acc).
 
 %----------------------FOLD RIGHT------------------------------------------
 foldr(#ref{table = Table}, Query, UserFun, InAcc)->
-  Last =
-    case Query of
-      #{start := Start}-> Start;
-      _-> ets:last(Table)
-    end,
+  Last = backward_start_lookup(Table, Query),
   Fun =
     case Query of
       #{ms := MS}->
@@ -394,27 +357,17 @@ foldr(#ref{table = Table}, Query, UserFun, InAcc)->
 
 do_foldr_stop('$end_of_table', _Table, _Fun, Acc, _StopKey)->
   Acc;
-do_foldr_stop(Key, Table, Fun, InAcc, StopKey) when Key >= StopKey->
-  case ets:lookup(Table, Key) of
-    [Rec]->
-      Acc = Fun(Rec, InAcc),
-      do_foldr_stop(ets:prev(Table, Key), Table, Fun, Acc, StopKey);
-    []->
-      do_foldr_stop(ets:prev(Table, Key), Table, Fun, InAcc, StopKey)
-  end;
+do_foldr_stop({Key, [Rec]}, Table, Fun, InAcc, StopKey) when Key >= StopKey->
+  Acc = Fun(Rec, InAcc),
+  do_foldr_stop(ets:prev_lookup(Table, Key), Table, Fun, Acc, StopKey);
 do_foldr_stop(_Key, _Table, _Fun, Acc, _StopKey)->
   Acc.
 
 do_foldr('$end_of_table', _Table, _Fun, Acc)->
   Acc;
-do_foldr(Key, Table, Fun, InAcc)->
-  case ets:lookup(Table, Key) of
-    [Rec]->
-      Acc = Fun(Rec, InAcc),
-      do_foldr(ets:prev(Table, Key), Table, Fun, Acc);
-    []->
-      do_foldr(ets:prev(Table, Key), Table, Fun, InAcc)
-  end.
+do_foldr({Key, [Rec]}, Table, Fun, InAcc)->
+  Acc = Fun(Rec, InAcc),
+  do_foldr(ets:prev_lookup(Table, Key), Table, Fun, Acc).
 
 %%=================================================================
 %%	COPY
@@ -491,3 +444,29 @@ pool_params(Table, Params) when is_map(Params)->
       module => ?MODULE
     }
   ).
+
+forward_start_lookup(Table, #{start := Start})->
+  current_or_next_lookup(Table, Start);
+forward_start_lookup(Table, _Query)->
+  ets:first_lookup(Table).
+
+backward_start_lookup(Table, #{start := Start})->
+  current_or_prev_lookup(Table, Start);
+backward_start_lookup(Table, _Query)->
+  ets:last_lookup(Table).
+
+current_or_next_lookup(Table, Key)->
+  case ets:lookup(Table, Key) of
+    [Rec]->
+      {Key, [Rec]};
+    []->
+      ets:next_lookup(Table, Key)
+  end.
+
+current_or_prev_lookup(Table, Key)->
+  case ets:lookup(Table, Key) of
+    [Rec]->
+      {Key, [Rec]};
+    []->
+      ets:prev_lookup(Table, Key)
+  end.

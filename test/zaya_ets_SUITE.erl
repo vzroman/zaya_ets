@@ -1,0 +1,381 @@
+-module(zaya_ets_SUITE).
+
+-include_lib("common_test/include/ct.hrl").
+-include_lib("eunit/include/eunit.hrl").
+
+-define(POOL_PARAMS, #{
+  pool => #{
+    pool_size => 1,
+    batch_size => 4
+  }
+}).
+
+-export([
+  all/0,
+  groups/0,
+  init_per_suite/1,
+  end_per_suite/1,
+  init_per_group/2,
+  end_per_group/2,
+  init_per_testcase/2,
+  end_per_testcase/2
+]).
+
+-export([
+  default_pool_created_test/1,
+  service_api_and_info_test/1,
+  low_level_api_test/1,
+  iterator_navigation_test/1,
+  find_query_variants_test/1,
+  fold_and_copy_test/1,
+  dump_batch_and_pool_batch_test/1,
+  transaction_api_test/1,
+  concurrent_write_callers_test/1
+]).
+
+all()->
+  [
+    default_pool_created_test,
+    {group, pool_mode},
+    {group, direct_mode}
+  ].
+
+groups()->
+  Tests = mode_tests(),
+  [
+    {pool_mode, [sequence], Tests},
+    {direct_mode, [sequence], Tests}
+  ].
+
+mode_tests()->
+  [
+    service_api_and_info_test,
+    low_level_api_test,
+    iterator_navigation_test,
+    find_query_variants_test,
+    fold_and_copy_test,
+    dump_batch_and_pool_batch_test,
+    transaction_api_test,
+    concurrent_write_callers_test
+  ].
+
+init_per_suite(Config)->
+  Config.
+
+end_per_suite(_Config)->
+  ok.
+
+init_per_group(pool_mode, Config)->
+  [{mode, pool}, {backend_params, ?POOL_PARAMS} | Config];
+init_per_group(direct_mode, Config)->
+  [{mode, direct}, {backend_params, #{pool => disabled}} | Config];
+init_per_group(_Group, Config)->
+  Config.
+
+end_per_group(_Group, _Config)->
+  ok.
+
+init_per_testcase(_TestCase, Config)->
+  Config.
+
+end_per_testcase(_TestCase, _Config)->
+  ok.
+
+default_pool_created_test(_Config)->
+  Ref1 = zaya_ets:create(#{}),
+  try
+    assert_default_pool_ref(Ref1),
+    ok = zaya_ets:write(Ref1, [{default_create, ok}]),
+    ?assertEqual([{default_create, ok}], zaya_ets:read(Ref1, [default_create]))
+  after
+    ok = zaya_ets:close(Ref1)
+  end,
+
+  Ref2 = zaya_ets:open(#{}),
+  try
+    assert_default_pool_ref(Ref2),
+    ?assertEqual([], zaya_ets:read(Ref2, [default_open]))
+  after
+    ok = zaya_ets:close(Ref2)
+  end.
+
+service_api_and_info_test(Config)->
+  Params = backend_params(Config),
+  ?assertEqual(ok, zaya_ets:remove(Params)),
+
+  Ref1 = zaya_ets:create(Params),
+  try
+    assert_mode_ref(Config, Ref1),
+    ?assertEqual(undefined, zaya_ets:first(Ref1)),
+    ?assertEqual(undefined, zaya_ets:last(Ref1)),
+    ok = zaya_ets:write(Ref1, [{service_key, service_value}]),
+    ?assert(zaya_ets:get_size(Ref1) > 0)
+  after
+    ok = zaya_ets:close(Ref1)
+  end,
+
+  Ref2 = zaya_ets:open(Params),
+  try
+    assert_mode_ref(Config, Ref2),
+    ?assertEqual([], zaya_ets:read(Ref2, [service_key]))
+  after
+    ok = zaya_ets:close(Ref2)
+  end,
+
+  ?assertEqual(ok, zaya_ets:remove(Params)).
+
+low_level_api_test(Config)->
+  with_ref(
+    Config,
+    fun(Ref)->
+      ok = zaya_ets:write(Ref, sample_records()),
+      ?assertEqual(
+        [{5, five}, {1, one}, {3, three}],
+        zaya_ets:read(Ref, [5, 1, 99, 3])
+      ),
+
+      ok = zaya_ets:write(Ref, []),
+      ok = zaya_ets:delete(Ref, [3, 42]),
+      ?assertEqual(
+        #{1 => one, 5 => five, 7 => seven},
+        read_map(Ref, [1, 5, 7])
+      ),
+
+      ok = zaya_ets:delete(Ref, []),
+      ?assertEqual([], zaya_ets:read(Ref, [3, 42]))
+    end
+  ).
+
+iterator_navigation_test(Config)->
+  with_ref(
+    Config,
+    fun(Ref)->
+      ?assertEqual(undefined, zaya_ets:first(Ref)),
+      ?assertEqual(undefined, zaya_ets:last(Ref)),
+      ?assertEqual(undefined, zaya_ets:next(Ref, 1)),
+      ?assertEqual(undefined, zaya_ets:prev(Ref, 1)),
+
+      ok = zaya_ets:write(Ref, sample_records()),
+      ?assertEqual({1, one}, zaya_ets:first(Ref)),
+      ?assertEqual({7, seven}, zaya_ets:last(Ref)),
+      ?assertEqual({3, three}, zaya_ets:next(Ref, 1)),
+      ?assertEqual({3, three}, zaya_ets:next(Ref, 2)),
+      ?assertEqual(undefined, zaya_ets:next(Ref, 7)),
+      ?assertEqual({5, five}, zaya_ets:prev(Ref, 7)),
+      ?assertEqual({5, five}, zaya_ets:prev(Ref, 6)),
+      ?assertEqual(undefined, zaya_ets:prev(Ref, 1))
+    end
+  ).
+
+find_query_variants_test(Config)->
+  MSAtLeastThree = [{{'$1', '$2'}, [{'>=', '$1', 3}], ['$_']}],
+  with_ref(
+    Config,
+    fun(Ref)->
+      ok = zaya_ets:write(Ref, sample_records()),
+      ?assertEqual(sample_records(), zaya_ets:find(Ref, #{})),
+      ?assertEqual(
+        [{3, three}, {5, five}, {7, seven}],
+        zaya_ets:find(Ref, #{start => 2})
+      ),
+      ?assertEqual(
+        [{3, three}, {5, five}],
+        zaya_ets:find(Ref, #{start => 2, stop => 5, limit => 2})
+      ),
+      ?assertEqual(
+        [{3, three}, {5, five}, {7, seven}],
+        zaya_ets:find(Ref, #{ms => MSAtLeastThree})
+      ),
+      ?assertEqual(
+        [{3, three}, {5, five}],
+        zaya_ets:find(Ref, #{ms => MSAtLeastThree, limit => 2})
+      ),
+      ?assertEqual(
+        [{3, three}, {5, five}],
+        zaya_ets:find(Ref, #{start => 2, stop => 5, ms => MSAtLeastThree})
+      ),
+      ?assertEqual(
+        [{3, three}],
+        zaya_ets:find(Ref, #{start => 2, stop => 7, ms => MSAtLeastThree, limit => 1})
+      )
+    end
+  ).
+
+fold_and_copy_test(Config)->
+  MSValuesAtLeastThree = [{{'$1', '$2'}, [{'>=', '$1', 3}], ['$2']}],
+  with_ref(
+    Config,
+    fun(Ref)->
+      ok = zaya_ets:write(Ref, sample_records()),
+      ?assertEqual(
+        [seven, five, three],
+        zaya_ets:foldl(
+          Ref,
+          #{ms => MSValuesAtLeastThree},
+          fun(Value, Acc)-> [Value | Acc] end,
+          []
+        )
+      ),
+      ?assertEqual(
+        [1, 3, 5],
+        zaya_ets:foldr(
+          Ref,
+          #{start => 6},
+          fun({Key, _Value}, Acc)-> [Key | Acc] end,
+          []
+        )
+      ),
+      ?assertEqual(
+        [{5, five}, {3, three}, {1, one}],
+        zaya_ets:foldl(
+          Ref,
+          #{},
+          fun({5, five} = Rec, Acc)-> throw({stop, [Rec | Acc]});
+             (Rec, Acc)-> [Rec | Acc]
+          end,
+          []
+        )
+      ),
+      ?assertEqual(
+        [7, 5, 3, 1],
+        zaya_ets:copy(
+          Ref,
+          fun({Key, _Value}, Acc)-> [Key | Acc] end,
+          []
+        )
+      )
+    end
+  ).
+
+dump_batch_and_pool_batch_test(Config)->
+  with_ref(
+    Config,
+    fun(Ref)->
+      ok = zaya_ets:dump_batch(Ref, [{raw_a, 10}, {raw_b, 20}]),
+      ?assertEqual(
+        #{raw_a => 10, raw_b => 20},
+        read_map(Ref, [raw_a, raw_b])
+      ),
+
+      ok =
+        zaya_ets:pool_batch(
+          ref_table(Ref),
+          [
+            {write, [{raw_c, 30}]},
+            {write, [{raw_d, 40}]},
+            {delete, [raw_a]},
+            {write, [{raw_e, 50}]},
+            {delete, []}
+          ]
+        ),
+      ?assertEqual(
+        #{raw_b => 20, raw_c => 30, raw_d => 40, raw_e => 50},
+        read_map(Ref, [raw_b, raw_c, raw_d, raw_e])
+      ),
+      ?assertEqual([], zaya_ets:read(Ref, [raw_a]))
+    end
+  ).
+
+transaction_api_test(Config)->
+  with_ref(
+    Config,
+    fun(Ref)->
+      ok = zaya_ets:write(Ref, [{keep, 1}, {drop, 2}, {stay, 3}]),
+      ok = zaya_ets:commit(Ref, [{keep, 10}, {add, 11}], [drop]),
+      ?assertEqual(
+        #{keep => 10, add => 11, stay => 3},
+        read_map(Ref, [keep, add, stay])
+      ),
+      ?assertEqual([], zaya_ets:read(Ref, [drop])),
+
+      Token = zaya_ets:commit1(Ref, [{keep, 20}, {new, 21}], [add]),
+      ?assertEqual({[{keep, 20}, {new, 21}], [add]}, Token),
+      ok = zaya_ets:rollback(Ref, Token),
+      ?assertEqual(
+        #{keep => 10, add => 11, stay => 3},
+        read_map(Ref, [keep, add, stay])
+      ),
+
+      ok = zaya_ets:commit2(Ref, Token),
+      ?assertEqual(
+        #{keep => 20, new => 21, stay => 3},
+        read_map(Ref, [keep, new, stay])
+      ),
+      ?assertEqual([], zaya_ets:read(Ref, [add])),
+
+      ok = zaya_ets:commit(Ref, [], []),
+      ok = zaya_ets:write(Ref, []),
+      ok = zaya_ets:delete(Ref, []),
+      ?assertEqual(
+        #{keep => 20, new => 21, stay => 3},
+        read_map(Ref, [keep, new, stay])
+      )
+    end
+  ).
+
+concurrent_write_callers_test(Config)->
+  with_ref(
+    Config,
+    fun(Ref)->
+      Parent = self(),
+      Keys = lists:seq(1, 8),
+      [
+        spawn(fun()->
+          Parent ! {writer_result, Key, catch zaya_ets:write(Ref, [{Key, Key * 10}])}
+        end)
+       || Key <- Keys
+      ],
+      Results = collect_results(length(Keys), []),
+      ?assertEqual([], [Result || {_Key, Result} <- Results, Result =/= ok]),
+      ?assertEqual(
+        maps:from_list([{Key, Key * 10} || Key <- Keys]),
+        read_map(Ref, Keys)
+      )
+    end
+  ).
+
+with_ref(Config, Fun)->
+  Ref = zaya_ets:create(backend_params(Config)),
+  try
+    assert_mode_ref(Config, Ref),
+    Fun(Ref)
+  after
+    ok = zaya_ets:close(Ref)
+  end.
+
+backend_params(Config)->
+  ?config(backend_params, Config).
+
+assert_default_pool_ref(Ref)->
+  ?assert(is_pid(ref_pool(Ref))).
+
+assert_mode_ref(Config, Ref)->
+  case ?config(mode, Config) of
+    pool->
+      ?assert(is_pid(ref_pool(Ref)));
+    direct->
+      ?assertEqual(disabled, ref_pool(Ref))
+  end.
+
+ref_table(Ref)->
+  element(2, Ref).
+
+ref_pool(Ref)->
+  element(3, Ref).
+
+sample_records()->
+  [{1, one}, {3, three}, {5, five}, {7, seven}].
+
+read_map(Ref, Keys)->
+  maps:from_list(zaya_ets:read(Ref, Keys)).
+
+collect_results(0, Results)->
+  Results;
+collect_results(Count, Results)->
+  receive
+    {writer_result, Key, Result}->
+      collect_results(Count - 1, [{Key, Result} | Results])
+  after
+    5000 ->
+      ct:fail(timeout)
+  end.
