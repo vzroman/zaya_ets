@@ -1,1 +1,4 @@
-[].
+[{<<"zaya_pool">>,
+  {git,"https://github.com/vzroman/zaya_pool.git",
+       {ref,"082855035f3df2e585eb80623f2b61faf8f90183"}},
+  0}].
