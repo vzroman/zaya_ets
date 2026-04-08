@@ -14,6 +14,7 @@
 %%	LOW_LEVEL API
 %%=================================================================
 -export([
+  pool_batch/2,
   read/2,
   write/2,
   delete/2
@@ -81,9 +82,8 @@ open(Params)->
     {read_concurrency, true},
     {write_concurrency, true}
   ]),
-  PoolOpts = writer_pool_opts(Params),
   try
-    {ok, Pool} = zaya_ets_writer_pool:start_link(Table, PoolOpts),
+    Pool = open_pool(Table, Params),
     #ref{
       table = Table,
       pool = Pool
@@ -95,7 +95,7 @@ open(Params)->
   end.
 
 close(#ref{table = Table, pool = Pool})->
-  catch zaya_ets_writer_pool:stop(Pool),
+  catch close_pool(Pool),
   catch ets:delete(Table),
   ok.
 
@@ -105,6 +105,9 @@ remove(_Params)->
 %%=================================================================
 %%	LOW_LEVEL
 %%=================================================================
+pool_batch(Table, Requests)->
+  ok = apply_pool_requests(Table, Requests).
+
 read(#ref{table = Table} = Ref, [Key | Rest])->
   case ets:lookup(Table, Key) of
     [Rec]->
@@ -115,13 +118,13 @@ read(#ref{table = Table} = Ref, [Key | Rest])->
 read(_Ref, [])->
   [].
 
-write(#ref{pool = Pool}, KVs)->
+write(Ref, KVs)->
   Writes = [{write, KVs}],
-  zaya_ets_writer_pool:call(Pool, Writes).
+  call_pool(Ref, Writes).
 
-delete(#ref{pool = Pool}, Keys)->
+delete(Ref, Keys)->
   Deletes = [{delete, Keys}],
-  zaya_ets_writer_pool:call(Pool, Deletes).
+  call_pool(Ref, Deletes).
 
 %%=================================================================
 %%	ITERATOR
@@ -414,16 +417,16 @@ dump_batch(#ref{table = Table}, KVs)->
 %%=================================================================
 %%	TRANSACTION API
 %%=================================================================
-commit(#ref{pool = Pool}, Write, Delete)->
+commit(Ref, Write, Delete)->
   Commits = [{write,Write}, {delete, Delete}],
-  zaya_ets_writer_pool:call(Pool, Commits).
+  call_pool(Ref, Commits).
 
 commit1(_Ref, Write, Delete)->
   {Write, Delete}.
 
-commit2(#ref{pool = Pool}, {Write, Delete})->
+commit2(Ref, {Write, Delete})->
   Commits = [{write,Write}, {delete, Delete}],
-  zaya_ets_writer_pool:call(Pool, Commits).
+  call_pool(Ref, Commits).
 
 rollback(_Ref, _TRef)->
   ok.
@@ -444,19 +447,42 @@ do_dump_batch(Table, KVs)->
   true = ets:insert(Table, KVs),
   ok.
 
-writer_pool_opts(Params) when is_map(Params)->
+pool_params(Table, Params) when is_map(Params)->
   maps:merge(
     #{
-      size => default_writer_pool_size(),
-      batch_size => 1000
+      ref => Table,
+      module => ?MODULE
     },
-    maps:get(writer_pool, Params, #{})
+    maps:get(pool, Params, #{})
   ).
 
-default_writer_pool_size()->
-  case erlang:system_info(logical_processors) of
-    unknown ->
-      1;
-    Size when is_integer(Size), Size > 0 ->
-      Size
-  end.
+open_pool(_Table, #{pool := disabled})->
+  disabled;
+open_pool(Table, Params) when is_map(Params)->
+  {ok, Pool} = zaya_pool:start_link(pool_params(Table, Params)),
+  Pool.
+
+close_pool(disabled)->
+  ok;
+close_pool(Pool)->
+  zaya_pool:stop(Pool).
+
+call_pool(#ref{table = Table, pool = disabled}, Requests)->
+  pool_batch(Table, Requests);
+call_pool(#ref{pool = Pool}, Requests)->
+  zaya_pool:call(Pool, Requests).
+
+apply_pool_requests(_Table, [])->
+  ok;
+apply_pool_requests(Table, [{write, KVs} | Rest])->
+  true = ets:insert(Table, KVs),
+  apply_pool_requests(Table, Rest);
+apply_pool_requests(Table, [{delete, Keys} | Rest])->
+  ok = delete_keys(Table, Keys),
+  apply_pool_requests(Table, Rest).
+
+delete_keys(_Table, [])->
+  ok;
+delete_keys(Table, [Key | Rest])->
+  true = ets:delete(Table, Key),
+  delete_keys(Table, Rest).

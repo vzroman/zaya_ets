@@ -15,6 +15,8 @@
 ]).
 
 -export([
+  default_pool_created_test/1,
+  disabled_pool_direct_write_test/1,
   write_is_synchronous_test/1,
   delete_is_synchronous_test/1,
   commit_and_empty_requests_test/1,
@@ -26,6 +28,8 @@
 
 all()->
   [
+    default_pool_created_test,
+    disabled_pool_direct_write_test,
     write_is_synchronous_test,
     delete_is_synchronous_test,
     commit_and_empty_requests_test,
@@ -55,6 +59,34 @@ init_per_testcase(_TestCase, Config)->
 
 end_per_testcase(_TestCase, _Config)->
   ok.
+
+default_pool_created_test(_Config)->
+  Ref = zaya_ets:create(#{}),
+  try
+    ?assert(is_pid(element(3, Ref))),
+    ok = zaya_ets:write(Ref, [{default_pool, ok}]),
+    ?assertEqual([{default_pool, ok}], zaya_ets:read(Ref, [default_pool]))
+  after
+    ok = zaya_ets:close(Ref)
+  end.
+
+disabled_pool_direct_write_test(_Config)->
+  Ref = zaya_ets:create(#{pool => disabled}),
+  try
+    ?assertEqual(disabled, element(3, Ref)),
+    ok = zaya_ets:write(Ref, [{alpha, 1}, {beta, 2}]),
+    ?assertEqual(#{alpha => 1, beta => 2}, read_map(Ref, [alpha, beta])),
+    ok = zaya_ets:delete(Ref, [alpha]),
+    ?assertEqual([], zaya_ets:read(Ref, [alpha])),
+    ok = zaya_ets:commit(Ref, [{beta, 3}, {gamma, 4}], []),
+    ?assertEqual(#{beta => 3, gamma => 4}, read_map(Ref, [beta, gamma])),
+    Token = zaya_ets:commit1(Ref, [{delta, 5}], [gamma]),
+    ok = zaya_ets:commit2(Ref, Token),
+    ?assertEqual(#{beta => 3, delta => 5}, read_map(Ref, [beta, delta])),
+    ?assertEqual([], zaya_ets:read(Ref, [gamma]))
+  after
+    ok = zaya_ets:close(Ref)
+  end.
 
 write_is_synchronous_test(_Config)->
   with_ref(
@@ -169,8 +201,8 @@ with_ref(Fun)->
 
 new_ref()->
   zaya_ets:create(#{
-    writer_pool => #{
-      size => 1,
+    pool => #{
+      pool_size => 1,
       batch_size => 4
     }
   }).
