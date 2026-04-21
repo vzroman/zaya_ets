@@ -51,9 +51,8 @@
 %%=================================================================
 -export([
   commit/3,
-  commit1/3,
-  commit2/2,
-  rollback/2
+  prepare_rollback/3,
+  is_persistent/0
 ]).
 
 %%=================================================================
@@ -390,14 +389,30 @@ commit(#ref{pool = Pool}, Write, Delete)->
   Commits = [{write,Write}, {delete, Delete}],
   zaya_pool:call(Pool, Commits).
 
-commit1(_Ref, Write, Delete)->
-  {Write, Delete}.
+prepare_rollback(Ref, Write, Delete)->
+  prepare_rollback_from_read(fun(Keys)-> read(Ref, Keys) end, Write, Delete).
 
-commit2(Ref, {Write, Delete})->
-  commit( Ref, Write, Delete ).
+is_persistent()->
+  false.
 
-rollback(_Ref, _TRef)->
-  ok.
+prepare_rollback_from_read(ReadFun, Write, Delete)->
+  WriteMap = maps:from_list(Write),
+  WriteKeys = maps:keys(WriteMap),
+  CurrentForWrites = maps:from_list(ReadFun(WriteKeys)),
+  CurrentForDeletes = maps:from_list(ReadFun(Delete)),
+  RestoreWrites =
+    maps:fold(
+      fun(Key, Existing, Acc)->
+        case maps:get(Key, WriteMap) of
+          Existing -> Acc;
+          _ -> Acc#{Key => Existing}
+        end
+      end,
+      CurrentForDeletes,
+      CurrentForWrites
+    ),
+  DeleteBack = [Key || Key <- WriteKeys, not maps:is_key(Key, CurrentForWrites)],
+  {maps:to_list(RestoreWrites), DeleteBack}.
 
 %%=================================================================
 %%	POOL API

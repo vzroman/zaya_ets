@@ -30,6 +30,8 @@
   fold_and_copy_test/1,
   dump_batch_and_pool_batch_test/1,
   transaction_api_test/1,
+  prepare_rollback_roundtrip_test/1,
+  is_persistent_test/1,
   concurrent_write_callers_test/1
 ]).
 
@@ -56,6 +58,8 @@ mode_tests()->
     fold_and_copy_test,
     dump_batch_and_pool_batch_test,
     transaction_api_test,
+    prepare_rollback_roundtrip_test,
+    is_persistent_test,
     concurrent_write_callers_test
   ].
 
@@ -288,30 +292,35 @@ transaction_api_test(Config)->
       ),
       ?assertEqual([], zaya_ets:read(Ref, [drop])),
 
-      Token = zaya_ets:commit1(Ref, [{keep, 20}, {new, 21}], [add]),
-      ?assertEqual({[{keep, 20}, {new, 21}], [add]}, Token),
-      ok = zaya_ets:rollback(Ref, Token),
-      ?assertEqual(
-        #{keep => 10, add => 11, stay => 3},
-        read_map(Ref, [keep, add, stay])
-      ),
-
-      ok = zaya_ets:commit2(Ref, Token),
-      ?assertEqual(
-        #{keep => 20, new => 21, stay => 3},
-        read_map(Ref, [keep, new, stay])
-      ),
-      ?assertEqual([], zaya_ets:read(Ref, [add])),
-
       ok = zaya_ets:commit(Ref, [], []),
       ok = zaya_ets:write(Ref, []),
       ok = zaya_ets:delete(Ref, []),
       ?assertEqual(
-        #{keep => 20, new => 21, stay => 3},
-        read_map(Ref, [keep, new, stay])
+        #{keep => 10, add => 11, stay => 3},
+        read_map(Ref, [keep, add, stay])
       )
     end
   ).
+
+prepare_rollback_roundtrip_test(Config)->
+  with_ref(
+    Config,
+    fun(Ref)->
+      ok = zaya_ets:write(Ref, [{item, original}, {drop, old}]),
+      {RollbackWrite, RollbackDelete} =
+        zaya_ets:prepare_rollback(Ref, [{item, updated}, {fresh, new}], [drop, missing]),
+      ok = zaya_ets:commit(Ref, [{item, updated}, {fresh, new}], [drop, missing]),
+      ok = zaya_ets:commit(Ref, RollbackWrite, RollbackDelete),
+      ?assertEqual(
+        #{item => original, drop => old},
+        read_map(Ref, [item, drop])
+      ),
+      ?assertEqual([], zaya_ets:read(Ref, [fresh, missing]))
+    end
+  ).
+
+is_persistent_test(_Config)->
+  ?assertEqual(false, zaya_ets:is_persistent()).
 
 concurrent_write_callers_test(Config)->
   with_ref(
