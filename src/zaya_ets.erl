@@ -389,30 +389,23 @@ commit(#ref{pool = Pool}, Write, Delete)->
   Commits = [{write,Write}, {delete, Delete}],
   zaya_pool:call(Pool, Commits).
 
-prepare_rollback(Ref, Write, Delete)->
-  prepare_rollback_from_read(fun(Keys)-> read(Ref, Keys) end, Write, Delete).
+prepare_rollback(#ref{table = Table}, Write, Delete)->
+  Keys = lists:usort([K || {K,_V} <- Write] ++ Delete),
+  lists:foldl(
+    fun(K, {WAcc, DAcc})->
+      case ets:lookup(Table, K) of
+        [Rec]->
+          {[Rec|WAcc], DAcc};
+        _->
+          {WAcc, [K|DAcc]}
+      end
+    end,
+    {[],[]},
+    Keys
+  ).
 
 is_persistent()->
   false.
-
-prepare_rollback_from_read(ReadFun, Write, Delete)->
-  WriteMap = maps:from_list(Write),
-  WriteKeys = maps:keys(WriteMap),
-  CurrentForWrites = maps:from_list(ReadFun(WriteKeys)),
-  CurrentForDeletes = maps:from_list(ReadFun(Delete)),
-  RestoreWrites =
-    maps:fold(
-      fun(Key, Existing, Acc)->
-        case maps:get(Key, WriteMap) of
-          Existing -> Acc;
-          _ -> Acc#{Key => Existing}
-        end
-      end,
-      CurrentForDeletes,
-      CurrentForWrites
-    ),
-  DeleteBack = [Key || Key <- WriteKeys, not maps:is_key(Key, CurrentForWrites)],
-  {maps:to_list(RestoreWrites), DeleteBack}.
 
 %%=================================================================
 %%	POOL API
@@ -438,7 +431,7 @@ get_size(#ref{table = Table})->
   erlang:system_info(wordsize) * ets:info(Table, memory).
 
 %%=================================================================
-%%	POOL UTILITIES
+%%	INTERNAL UTILITIES
 %%=================================================================
 open_pool(_Table, #{pool := disabled})->
   disabled;
