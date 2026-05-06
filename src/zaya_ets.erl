@@ -390,19 +390,30 @@ commit(#ref{pool = Pool}, Write, Delete)->
   zaya_pool:call(Pool, Commits).
 
 prepare_rollback(#ref{table = Table}, Write, Delete)->
-  Keys = lists:usort([K || {K,_V} <- Write] ++ Delete),
-  lists:foldl(
-    fun(K, {WAcc, DAcc})->
-      case ets:lookup(Table, K) of
-        [Rec]->
-          {[Rec|WAcc], DAcc};
-        _->
-          {WAcc, [K|DAcc]}
-      end
+  {W_acc0, D_acc} = rollback_write(Write, Table, {[],[]}),
+  W_acc = rollback_delete(Delete, Table, W_acc0),
+  {W_acc, D_acc}.
+
+rollback_write([{K,V}|Rest], Table, Acc0 = {W_acc,D_acc})->
+  Acc =
+    case ets:lookup(Table, K) of
+      [{K,V}]-> Acc0;
+      [Rec0] -> {[Rec0|W_acc], D_acc};
+      _-> {W_acc, [K|D_acc]}
     end,
-    {[],[]},
-    Keys
-  ).
+  rollback_write(Rest, Table, Acc);
+rollback_write([], _Table, Acc)->
+  Acc.
+
+rollback_delete([K|Rest], Table, Acc0)->
+  Acc =
+    case ets:lookup(Table, K) of
+      [Rec] -> [Rec|Acc0];
+      _-> Acc0
+    end,
+  rollback_delete(Rest, Table, Acc);
+rollback_delete([], _Table, Acc)->
+  Acc.
 
 is_persistent()->
   false.
