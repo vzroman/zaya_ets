@@ -1,3 +1,4 @@
 rebar.lock
 zaya_ets.iml
 _build/*
+.worktrees/*
